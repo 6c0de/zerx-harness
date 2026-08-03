@@ -6,20 +6,21 @@
 
 **Architecture:** A model-free `zerx/` package implements perception, heuristics, memory, budget, and JSON policy parsing/repair against our own internal types (`zerx/types.py`), fully unit-tested without GPU or model access via a `ModelBackend` protocol and `FakeModelBackend` test double. A thin `agent/my_agent.py` adapter — added on top of the vendored official starter — translates the real upstream Frame/GameAction API into these internal types and back, isolating the one place real-API uncertainty lives. `eval/run_ablation.py` owns the experiment-record schema and config-sweep generator used for ablation once the adapter is wired to real games.
 
-**Tech Stack:** Python 3.12 (starter's `arc-agi` package requirement), pytest, numpy (heuristics scoring only), stdlib `dataclasses`/`json`/`hashlib`/`re`/`random`, the official `arcprize/ARC-AGI-3-Kaggle-Starter` framework (exact import paths confirmed in Task 1, not assumed), its `make` workflow (`make setup`, `make play-local`, `make verify-local`).
+**Tech Stack:** Python 3.12 (starter's `arc-agi` package requirement), pytest, numpy (heuristics scoring only), stdlib `dataclasses`/`json`/`hashlib`/`re`/`random`/`urllib`, the official `arcprize/ARC-AGI-3-Kaggle-Starter` framework (exact import paths confirmed in Task 1, not assumed), its `make` workflow (`make setup`, `make play-local`, `make verify-local`), and a development-only Cerebras Inference Cloud backend (`gemma-4-31b`, network API, mocked in the default test suite).
 
 ## Global Constraints
 
 - Python 3.12 required (`arc-agi` package requirement) — see [AGENTS.md](../../../AGENTS.md).
-- No internet access at Kaggle evaluation time; no closed/API-based models (GPT/Claude/Gemini) anywhere in the submitted agent — Gemma-4-31B only.
+- No internet access at Kaggle evaluation time; no closed/API-based models (GPT/Claude/Gemini) anywhere in the submitted agent — Gemma-4-31B only. This includes Cerebras: it is a development-only proxy lane and must never appear in the Kaggle runtime or artifact, under any condition (see Task 9/10 and `AGENTS.md`'s "Cerebras development boundary").
 - Never load Gemma-4-31B locally (RTX 4060, insufficient VRAM) — model loading only happens on Colab Pro or Kaggle's `rtx6000` accelerator, in later plans.
 - `ACTION6` coordinates must validate to the inclusive range `[0, 63]`.
 - `ACTION1`–`ACTION5` have no fixed/hardcoded meaning — semantics are game-specific.
 - `ACTION7` must never be returned unless a game's frame metadata explicitly lists it as legal.
-- Feature modules never read environment variables directly — only `zerx/config.py` reads env vars, at startup.
+- Feature modules never read environment variables directly — only `zerx/config.py` reads env vars, at startup. The one deliberate exception is `CEREBRAS_API_KEY`, read only inside the Cerebras backend's own client constructor (Task 9) — a credential is not a config value and must never be serialized, hashed, or logged.
 - `choose_action` (and everything it calls) must never raise an unhandled exception.
-- Only 5 official Kaggle submissions/day exist — nothing in this plan pushes to Kaggle or spends that quota; that's a later plan requiring explicit approval per `AGENTS.md`'s Kaggle gate.
+- Only 5 official Kaggle submissions/day exist — nothing in this plan pushes to Kaggle or spends that quota; that's a later plan requiring explicit approval per `AGENTS.md`'s Kaggle gate. This is also a 5-day delivery window (today is Day 1, due Day 5 — see `docs/TEAM_WORKFLOW.md`); this plan is Day 1's local-skeleton portion of that schedule.
 - `heuristic_first` and `arbiter_on` both default to **off** until ablation comparisons demonstrate value.
+- No `CEREBRAS_API_KEY` is required to run the default `pytest` suite — all Cerebras calls are mocked; live-network Cerebras tests are opt-in and separately marked.
 
 ---
 
@@ -31,7 +32,7 @@
 - Create: `docs/superpowers/experiments/baseline-000.md`
 
 **Interfaces:**
-- Produces: the real `Agent`, `GameAction`, and frame-data type import paths (recorded in `baseline-000.md`) that Task 11's adapter depends on.
+- Produces: the real `Agent`, `GameAction`, and frame-data type import paths (recorded in `baseline-000.md`) that Task 13's adapter depends on.
 
 - [ ] **Step 1: Clone the upstream starter into a scratch directory**
 
@@ -67,7 +68,7 @@ Open `agent/my_agent.py` (the file just copied in Step 3) and read it fully. It 
 - The exact attribute/method names used to read the grid, the list of currently-legal actions, and the game-over/terminal state off a frame object.
 - The exact method used to attach `{"x", "y"}` data to `GameAction.ACTION6` (the README shows `env.step(GameAction.ACTION6, data={...})` for the standalone agent framework, but the Kaggle starter's `MyAgent.choose_action` may return the action differently — check what the random baseline actually returns).
 
-These go into `baseline-000.md` in Step 7. Task 11 depends on this being accurate, not assumed.
+These go into `baseline-000.md` in Step 7. Task 13 depends on this being accurate, not assumed.
 
 - [ ] **Step 6: Run the unchanged starter baseline**
 
@@ -116,7 +117,7 @@ Expected: commit succeeds; `git status` is clean.
 - Create: `requirements-zerx.txt`
 
 **Interfaces:**
-- Produces: `ActionName` (Enum), `Action` (validated dataclass), `GameFrame` (dataclass) — used by every other `zerx` module and by Task 11's adapter.
+- Produces: `ActionName` (Enum), `Action` (validated dataclass), `GameFrame` (dataclass) — used by every other `zerx` module and by Task 13's adapter.
 
 - [ ] **Step 1: Add test tooling to the venv**
 
@@ -269,13 +270,15 @@ git commit -m "feat(zerx): add shared internal Action/ActionName/GameFrame types
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `Config` (frozen dataclass) with fields `experiment_id`, `heuristic_first`, `heuristic_confidence_threshold`, `memory_on`, `memory_refresh_interval`, `arbiter_on`, `budget_soft_cap`, `model_revision`; `Config.from_env(env=None)`, `Config.to_json()`, `Config.config_hash()`. Every later module receives a `Config` instance by parameter, never reads env vars itself.
+- Produces: `Config` (frozen dataclass) with fields `experiment_id`, `heuristic_first`, `heuristic_confidence_threshold`, `memory_on`, `memory_refresh_interval`, `arbiter_on`, `budget_soft_cap`, `model_revision`, `backend` (`"fake" | "cerebras_dev" | "gemma_local" | "gemma_kaggle"`), `platform` (`"local" | "colab" | "kaggle"`); `Config.from_env(env=None)` (raises `ValueError` for the illegal `backend="cerebras_dev"` + `platform="kaggle"` combination), `Config.to_json()`, `Config.config_hash()`. Every later module receives a `Config` instance by parameter, never reads env vars itself.
 
 - [ ] **Step 1: Write the failing tests**
 
 `tests/test_config.py`:
 ```python
 import json
+
+import pytest
 
 from zerx.config import Config
 
@@ -318,6 +321,27 @@ def test_to_json_round_trips_all_fields():
     payload = json.loads(cfg.to_json())
     assert payload["experiment_id"] == "exp-2"
     assert payload["budget_soft_cap"] == 10
+
+
+def test_default_backend_and_platform_are_safe():
+    cfg = Config()
+    assert cfg.backend == "fake"
+    assert cfg.platform == "local"
+
+
+def test_from_env_rejects_cerebras_dev_on_kaggle_platform():
+    with pytest.raises(ValueError):
+        Config.from_env({"ZERX_BACKEND": "cerebras_dev", "ZERX_PLATFORM": "kaggle"})
+
+
+def test_from_env_allows_cerebras_dev_on_local_platform():
+    cfg = Config.from_env({"ZERX_BACKEND": "cerebras_dev", "ZERX_PLATFORM": "local"})
+    assert cfg.backend == "cerebras_dev"
+
+
+def test_from_env_allows_gemma_kaggle_on_kaggle_platform():
+    cfg = Config.from_env({"ZERX_BACKEND": "gemma_kaggle", "ZERX_PLATFORM": "kaggle"})
+    assert cfg.platform == "kaggle"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -374,6 +398,15 @@ class Config:
     arbiter_on: bool = False
     budget_soft_cap: int = 50
     model_revision: str = "gemma-4-31b-it"
+    backend: str = "fake"  # "fake" | "cerebras_dev" | "gemma_local" | "gemma_kaggle"
+    platform: str = "local"  # "local" | "colab" | "kaggle"
+
+    def __post_init__(self) -> None:
+        if self.backend == "cerebras_dev" and self.platform == "kaggle":
+            raise ValueError(
+                "cerebras_dev is a development-only backend and must never be "
+                "selected on platform=kaggle"
+            )
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Config":
@@ -393,6 +426,8 @@ class Config:
             arbiter_on=_env_bool(env, "ZERX_ARBITER_ON", cls.arbiter_on),
             budget_soft_cap=_env_int(env, "ZERX_BUDGET_SOFT_CAP", cls.budget_soft_cap),
             model_revision=_env_str(env, "ZERX_MODEL_REVISION", cls.model_revision),
+            backend=_env_str(env, "ZERX_BACKEND", cls.backend),
+            platform=_env_str(env, "ZERX_PLATFORM", cls.platform),
         )
 
     def to_json(self) -> str:
@@ -407,7 +442,7 @@ class Config:
 ```bash
 .venv/bin/pytest tests/test_config.py -v
 ```
-Expected: 6 passed.
+Expected: 10 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1160,7 +1195,348 @@ git commit -m "feat(zerx): add ModelBackend protocol, fake test double, Gemma st
 
 ---
 
-## Task 9: `zerx/policy.py` — JSON parsing, bounded repair, legal validation
+## Task 9: `zerx/backends/cerebras_dev.py` — development-only Cerebras backend
+
+**Files:**
+- Create: `zerx/backends/__init__.py` (empty)
+- Create: `zerx/backends/cerebras_dev.py`
+- Test: `tests/test_cerebras_dev.py`
+
+**Interfaces:**
+- Consumes: `ModelBackend` protocol shape from Task 8 (duck-typed — `CerebrasDevBackend` satisfies it by implementing `.generate(prompt: str) -> str`, same as `FakeModelBackend`/`GemmaModelBackend`).
+- Produces: `CerebrasDevBackend(model_id, api_version="v1", request_timeout_seconds=10.0, max_retries=2, api_key=None, http_post=None)` — `http_post` is an injected callable `(url, headers, json_body, timeout) -> dict` so tests never make a real network call; `api_key` defaults to reading `CEREBRAS_API_KEY` from `os.environ` only if not passed explicitly. `.generate(prompt) -> str`, `.credential_present: bool` property, `.last_latency_seconds: Optional[float]`.
+
+This backend is network-based and needs no local GPU, so — unlike
+`GemmaModelBackend` — it can be fully exercised (with a fake HTTP layer) in
+this local, model-free plan. Per `AGENTS.md`, it is the one module allowed
+to read `CEREBRAS_API_KEY` directly from the environment, and it must never
+be selected when `Config.platform == "kaggle"` (enforced by `Config`'s
+`__post_init__` from Task 3 — this task's tests confirm the backend itself
+also refuses to construct in that case, as defense in depth).
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/test_cerebras_dev.py`:
+```python
+import pytest
+
+from zerx.backends.cerebras_dev import CerebrasDevBackend
+
+
+def _fake_http_post(response_json, captured=None):
+    def _post(url, headers, json_body, timeout):
+        if captured is not None:
+            captured.append({"url": url, "headers": headers, "json_body": json_body, "timeout": timeout})
+        return response_json
+    return _post
+
+
+def _ok_response(text='{"action": "ACTION1"}'):
+    return {"choices": [{"message": {"content": text}}]}
+
+
+def test_generate_returns_message_content():
+    backend = CerebrasDevBackend(
+        model_id="gemma-4-31b",
+        api_key="sk-test-not-real",
+        http_post=_fake_http_post(_ok_response()),
+    )
+    assert backend.generate("prompt text") == '{"action": "ACTION1"}'
+
+
+def test_generate_records_latency_not_credentials():
+    backend = CerebrasDevBackend(
+        model_id="gemma-4-31b",
+        api_key="sk-test-not-real",
+        http_post=_fake_http_post(_ok_response()),
+    )
+    backend.generate("prompt text")
+    assert backend.last_latency_seconds is not None
+    assert backend.last_latency_seconds >= 0.0
+
+
+def test_credential_present_true_when_key_given():
+    backend = CerebrasDevBackend(model_id="gemma-4-31b", api_key="sk-test-not-real")
+    assert backend.credential_present is True
+
+
+def test_credential_present_false_when_no_key_anywhere(monkeypatch):
+    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
+    backend = CerebrasDevBackend(model_id="gemma-4-31b")
+    assert backend.credential_present is False
+
+
+def test_request_never_contains_raw_key_in_body():
+    captured = []
+    backend = CerebrasDevBackend(
+        model_id="gemma-4-31b",
+        api_key="sk-test-not-real",
+        http_post=_fake_http_post(_ok_response(), captured=captured),
+    )
+    backend.generate("prompt text")
+    assert "sk-test-not-real" not in str(captured[0]["json_body"])
+    assert captured[0]["headers"]["Authorization"] == "Bearer sk-test-not-real"
+
+
+def test_retries_on_transient_failure_then_succeeds():
+    calls = {"count": 0}
+
+    def flaky_post(url, headers, json_body, timeout):
+        calls["count"] += 1
+        if calls["count"] < 2:
+            raise TimeoutError("simulated transient failure")
+        return _ok_response()
+
+    backend = CerebrasDevBackend(
+        model_id="gemma-4-31b", api_key="sk-test-not-real", http_post=flaky_post, max_retries=2
+    )
+    assert backend.generate("prompt text") == '{"action": "ACTION1"}'
+    assert calls["count"] == 2
+
+
+def test_raises_after_exhausting_retries():
+    def always_fails(url, headers, json_body, timeout):
+        raise TimeoutError("simulated permanent failure")
+
+    backend = CerebrasDevBackend(
+        model_id="gemma-4-31b", api_key="sk-test-not-real", http_post=always_fails, max_retries=1
+    )
+    with pytest.raises(TimeoutError):
+        backend.generate("prompt text")
+
+
+def test_never_constructs_when_platform_kaggle():
+    with pytest.raises(ValueError):
+        CerebrasDevBackend(model_id="gemma-4-31b", api_key="sk-test-not-real", platform="kaggle")
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+```bash
+.venv/bin/pytest tests/test_cerebras_dev.py -v
+```
+Expected: FAIL — `ModuleNotFoundError: No module named 'zerx.backends'`.
+
+- [ ] **Step 3: Implement `zerx/backends/cerebras_dev.py`**
+
+Create empty `zerx/backends/__init__.py`, then:
+
+```python
+"""Development-only Cerebras Inference Cloud backend. Never selected when
+Config.platform == "kaggle" (enforced both here and in zerx/config.py, as
+defense in depth). Reads CEREBRAS_API_KEY directly from the environment —
+the one deliberate exception to "only config.py reads env vars", because a
+credential is not a config value and must never be serialized, hashed, or
+logged (see AGENTS.md's "Cerebras development boundary").
+
+As of August 2026, Cerebras serves `gemma-4-31b` in preview with both text
+and image input support — verify this still holds (model catalog and
+capabilities can change) before assuming either mode works.
+"""
+from __future__ import annotations
+
+import os
+import time
+from typing import Callable, Optional
+
+HttpPost = Callable[[str, dict, dict, float], dict]
+
+_CEREBRAS_CHAT_URL = "https://api.cerebras.ai/v1/chat/completions"
+
+
+def _default_http_post(url: str, headers: dict, json_body: dict, timeout: float) -> dict:
+    import json
+    import urllib.request
+
+    request = urllib.request.Request(
+        url, data=json.dumps(json_body).encode("utf-8"), headers=headers, method="POST"
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+class CerebrasDevBackend:
+    def __init__(
+        self,
+        model_id: str,
+        api_version: str = "v1",
+        request_timeout_seconds: float = 10.0,
+        max_retries: int = 2,
+        api_key: Optional[str] = None,
+        http_post: Optional[HttpPost] = None,
+        platform: str = "local",
+    ) -> None:
+        if platform == "kaggle":
+            raise ValueError("cerebras_dev must never be constructed when platform=kaggle")
+        self.model_id = model_id
+        self.api_version = api_version
+        self.request_timeout_seconds = request_timeout_seconds
+        self.max_retries = max_retries
+        self._api_key = api_key if api_key is not None else os.environ.get("CEREBRAS_API_KEY")
+        self._http_post = http_post if http_post is not None else _default_http_post
+        self.last_latency_seconds: Optional[float] = None
+
+    @property
+    def credential_present(self) -> bool:
+        return self._api_key is not None
+
+    def generate(self, prompt: str) -> str:
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        json_body = {
+            "model": self.model_id,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+
+        last_error: Optional[Exception] = None
+        for attempt in range(self.max_retries):
+            start = time.monotonic()
+            try:
+                response = self._http_post(
+                    _CEREBRAS_CHAT_URL, headers, json_body, self.request_timeout_seconds
+                )
+                self.last_latency_seconds = time.monotonic() - start
+                return response["choices"][0]["message"]["content"]
+            except Exception as exc:  # noqa: BLE001 - retried below, re-raised if exhausted
+                last_error = exc
+        assert last_error is not None
+        raise last_error
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+```bash
+.venv/bin/pytest tests/test_cerebras_dev.py -v
+```
+Expected: 8 passed. No network access and no real `CEREBRAS_API_KEY` were needed — every test injects `http_post` or a literal test string.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add zerx/backends/__init__.py zerx/backends/cerebras_dev.py tests/test_cerebras_dev.py
+git commit -m "feat(zerx): add development-only Cerebras backend with hard kaggle lockout"
+```
+
+---
+
+## Task 10: `zerx/secret_scan.py` — artifact secret scanning and backend contract test
+
+**Files:**
+- Create: `zerx/secret_scan.py`
+- Test: `tests/test_secret_scan.py`
+- Test: `tests/test_backend_contract.py`
+
+**Interfaces:**
+- Produces: `scan_for_secrets(text, extra_patterns=()) -> List[str]` — returns a list of human-readable findings (empty if clean). Flags `CEREBRAS_API_KEY`-looking assignments, the literal substring `api.cerebras.ai`, and any exact secret value passed in `extra_patterns` (so a real run can pass the actual configured key and confirm it isn't present, without hardcoding key formats here).
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/test_secret_scan.py`:
+```python
+from zerx.secret_scan import scan_for_secrets
+
+
+def test_clean_text_has_no_findings():
+    assert scan_for_secrets("this notebook loads gemma from /kaggle/input") == []
+
+
+def test_flags_cerebras_endpoint_reference():
+    findings = scan_for_secrets("client = Client(base_url='https://api.cerebras.ai/v1')")
+    assert any("api.cerebras.ai" in f for f in findings)
+
+
+def test_flags_cerebras_api_key_env_var_name():
+    findings = scan_for_secrets('CEREBRAS_API_KEY = "sk-something"')
+    assert any("CEREBRAS_API_KEY" in f for f in findings)
+
+
+def test_flags_extra_secret_value_if_present():
+    findings = scan_for_secrets("some text sk-my-actual-key-123 more text", extra_patterns=["sk-my-actual-key-123"])
+    assert len(findings) == 1
+
+
+def test_does_not_flag_extra_secret_value_if_absent():
+    findings = scan_for_secrets("clean text here", extra_patterns=["sk-my-actual-key-123"])
+    assert findings == []
+```
+
+`tests/test_backend_contract.py`:
+```python
+from zerx.backends.cerebras_dev import CerebrasDevBackend
+from zerx.model_backend import FakeModelBackend, GemmaModelBackend
+
+
+def test_all_backends_expose_generate_method():
+    fake = FakeModelBackend(responses=["x"])
+    cerebras = CerebrasDevBackend(model_id="gemma-4-31b", api_key="sk-test", http_post=lambda *a, **k: {"choices": [{"message": {"content": "x"}}]})
+    gemma = GemmaModelBackend(model_revision="gemma-4-31b-it")
+
+    for backend in (fake, cerebras, gemma):
+        assert callable(getattr(backend, "generate", None))
+
+
+def test_fake_and_cerebras_return_str_from_generate():
+    fake = FakeModelBackend(responses=["hello"])
+    cerebras = CerebrasDevBackend(model_id="gemma-4-31b", api_key="sk-test", http_post=lambda *a, **k: {"choices": [{"message": {"content": "hello"}}]})
+    assert isinstance(fake.generate("p"), str)
+    assert isinstance(cerebras.generate("p"), str)
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+```bash
+.venv/bin/pytest tests/test_secret_scan.py tests/test_backend_contract.py -v
+```
+Expected: FAIL — `ModuleNotFoundError: No module named 'zerx.secret_scan'`.
+
+- [ ] **Step 3: Implement `zerx/secret_scan.py`**
+
+```python
+"""Scans generated-artifact text (a notebook's source, a built package's
+files) for leaked Cerebras credentials/endpoints before it's allowed to
+ship anywhere near Kaggle. See AGENTS.md's hard safeguards.
+"""
+from __future__ import annotations
+
+import re
+from typing import Iterable, List
+
+_STATIC_PATTERNS = (
+    (re.compile(r"api\.cerebras\.ai"), "reference to api.cerebras.ai"),
+    (re.compile(r"CEREBRAS_API_KEY"), "reference to CEREBRAS_API_KEY"),
+)
+
+
+def scan_for_secrets(text: str, extra_patterns: Iterable[str] = ()) -> List[str]:
+    findings: List[str] = []
+    for pattern, description in _STATIC_PATTERNS:
+        if pattern.search(text):
+            findings.append(description)
+    for secret in extra_patterns:
+        if secret and secret in text:
+            findings.append("literal secret value found in artifact")
+    return findings
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+```bash
+.venv/bin/pytest tests/test_secret_scan.py tests/test_backend_contract.py -v
+```
+Expected: 7 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add zerx/secret_scan.py tests/test_secret_scan.py tests/test_backend_contract.py
+git commit -m "feat(zerx): add artifact secret scanner and backend contract test"
+```
+
+---
+
+## Task 11: `zerx/policy.py` — JSON parsing, bounded repair, legal validation
 
 **Files:**
 - Create: `zerx/policy.py`
@@ -1239,7 +1615,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'zerx.policy'`.
 
 ```python
 """JSON action parsing, bounded deterministic repair, and legal-action
-validation. No model calls live here — see `decide()` (added in Task 10)
+validation. No model calls live here — see `decide()` (added in Task 12)
 for the orchestrator that calls the model backend.
 """
 from __future__ import annotations
@@ -1325,14 +1701,14 @@ git commit -m "feat(zerx): add JSON action parsing with bounded deterministic re
 
 ---
 
-## Task 10: `zerx/policy.py` — `decide()` orchestrator
+## Task 12: `zerx/policy.py` — `decide()` orchestrator
 
 **Files:**
-- Modify: `zerx/policy.py` (append to the file created in Task 9)
+- Modify: `zerx/policy.py` (append to the file created in Task 11)
 - Test: `tests/test_policy_decide.py`
 
 **Interfaces:**
-- Consumes: `Config` (Task 3), `PerceptionResult`/`perceive` (Task 4), `DeadSignatureTracker`/`rank_click_candidates` (Task 5), `MemoryState`/`maybe_refresh` (Task 6), `BudgetSignal`/`evaluate_budget` (Task 7), `ModelBackend` (Task 8), `GameFrame`/`Action`/`ActionName` (Task 2), `parse_action` (Task 9, same file).
+- Consumes: `Config` (Task 3), `PerceptionResult`/`perceive` (Task 4), `DeadSignatureTracker`/`rank_click_candidates` (Task 5), `MemoryState`/`maybe_refresh` (Task 6), `BudgetSignal`/`evaluate_budget` (Task 7), `ModelBackend` (Task 8), `GameFrame`/`Action`/`ActionName` (Task 2), `parse_action` (Task 11, same file).
 - Produces: `Decision` (`.action: Action`, `.source: str`, `.repaired: bool`, `.budget: Optional[BudgetSignal]`), `build_prompt(perception, memory) -> str`, `decide(frame, history, memory, dead_signatures, config, backend, actions_taken) -> Tuple[Decision, MemoryState]` — never raises, implements the control flow from `AGENTS.md`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1537,7 +1913,7 @@ Expected: FAIL — `ImportError: cannot import name 'decide' from 'zerx.policy'`
 
 - [ ] **Step 3: Append the orchestrator to `zerx/policy.py`**
 
-Add these imports to the top of `zerx/policy.py` (alongside the existing `json`, `re`, `dataclass`, `FrozenSet`, `Optional` and `zerx.types` imports from Task 9):
+Add these imports to the top of `zerx/policy.py` (alongside the existing `json`, `re`, `dataclass`, `FrozenSet`, `Optional` and `zerx.types` imports from Task 11):
 
 ```python
 import random
@@ -1707,7 +2083,7 @@ Expected: 10 passed.
 ```bash
 .venv/bin/pytest tests/ -v
 ```
-Expected: all tests across Tasks 2–10 pass (types, config, perception, heuristics, memory, budget, model_backend, policy_parse, policy_decide).
+Expected: all tests across Tasks 2–12 pass (types, config, perception, heuristics, memory, budget, model_backend, cerebras_dev, secret_scan, backend_contract, policy_parse, policy_decide).
 
 - [ ] **Step 6: Commit**
 
@@ -1718,13 +2094,13 @@ git commit -m "feat(zerx): add decide() orchestrator wiring perception/heuristic
 
 ---
 
-## Task 11: `agent/my_agent.py` — thin harness adapter
+## Task 13: `agent/my_agent.py` — thin harness adapter
 
 **Files:**
 - Modify: `agent/my_agent.py` (replace the random-baseline body imported in Task 1)
 
 **Interfaces:**
-- Consumes: `decide()`, `Decision` (Task 10), `Config` (Task 3), `MemoryState` (Task 6), `DeadSignatureTracker` (Task 5), `GemmaModelBackend` (Task 8), `GameFrame`/`Action`/`ActionName` (Task 2), and the real upstream `Agent`/`GameAction`/frame-data types recorded in `docs/superpowers/experiments/baseline-000.md` (Task 1, Step 5).
+- Consumes: `decide()`, `Decision` (Task 12), `Config` (Task 3), `MemoryState` (Task 6), `DeadSignatureTracker` (Task 5), `GemmaModelBackend` (Task 8), `GameFrame`/`Action`/`ActionName` (Task 2), and the real upstream `Agent`/`GameAction`/frame-data types recorded in `docs/superpowers/experiments/baseline-000.md` (Task 1, Step 5).
 - Produces: `MyAgent` — the class the Kaggle harness imports and drives.
 
 - [ ] **Step 1: Re-read the API notes from Task 1**
@@ -1818,7 +2194,7 @@ git commit -m "feat(agent): wire MyAgent to zerx.policy.decide() via a thin adap
 
 ---
 
-## Task 12: `eval/run_ablation.py` — experiment record schema and config sweep
+## Task 14: `eval/run_ablation.py` — experiment record schema and config sweep
 
 **Files:**
 - Create: `eval/__init__.py` (empty)
@@ -1919,7 +2295,7 @@ Create empty `eval/__init__.py`, then:
 generator used by ablation runs. The reproducibility fields here match
 AGENTS.md's "Configuration and reproducibility" section. The actual
 "play N local games with this config" loop is wired in once
-agent/my_agent.py's harness adapter (Task 11) is exercised against real
+agent/my_agent.py's harness adapter (Task 13) is exercised against real
 games — this module owns the record format independent of that wiring.
 """
 from __future__ import annotations
@@ -1985,7 +2361,7 @@ Expected: 6 passed.
 ```bash
 .venv/bin/pytest tests/ -v
 ```
-Expected: all tests pass (Tasks 2–12). This is the "Local → Colab" promotion gate from `AGENTS.md` — full unit suite passes, fake-backend end-to-end coverage exists, terminal state returns `RESET`, malformed output reaches the documented fallback, no model weights or secrets are committed.
+Expected: all tests pass (Tasks 2–14). This is the "Local → Colab" promotion gate from `AGENTS.md` — full unit suite passes, fake-backend end-to-end coverage exists, terminal state returns `RESET`, malformed output reaches the documented fallback, competition-mode configuration rejects `cerebras_dev`, the secret scan passes, no model weights or secrets are committed.
 
 - [ ] **Step 6: Commit**
 
@@ -1998,8 +2374,9 @@ git commit -m "feat(eval): add experiment record schema, JSONL writer, config sw
 
 ## What this plan does not cover
 
-Per the spec's scope and `AGENTS.md`/`CODEX_WORKFLOW.md`'s phasing, the following are deliberately out of scope here and belong in a follow-on plan once this one lands:
+Per the spec's scope and `AGENTS.md`/`docs/TEAM_WORKFLOW.md`'s phasing, the following are deliberately out of scope here and belong in a follow-on plan or a separately-approved action once this one lands:
 
 - Loading Gemma-4-31B for real (Colab Pro A100/L4 development — `GemmaModelBackend.generate()` stays `NotImplementedError` until then).
-- Running `eval/run_ablation.py`'s sweeps against real games with a real model.
-- Any Kaggle packaging, `make submit`, or official submission — those require explicit user approval per `AGENTS.md`'s Kaggle gate and are not part of a model-free local skeleton.
+- Making a real (non-mocked) call to the Cerebras API — Task 9's tests all inject a fake `http_post`. A live-network Cerebras smoke test (real `CEREBRAS_API_KEY`, querying the account's actual available model IDs) is opt-in and separately marked per `AGENTS.md`, not part of this plan's default suite.
+- Running `eval/run_ablation.py`'s sweeps against real games with a real model (Cerebras or Gemma).
+- Any Kaggle packaging, `make submit`, or official submission — including the Day 1 "known-working smoke submission" `docs/TEAM_WORKFLOW.md` calls for. That's a quota-consuming, hard-to-reverse action requiring explicit user approval per `AGENTS.md`'s Kaggle gate, not something this plan automates.

@@ -5,8 +5,10 @@
 Build a Kaggle submission for the ARC Prize 2026 — ARC-AGI-3 competition that
 plays the interactive game environments using a locally-hosted **Gemma-4-31B**
 model as the policy. Target: reach a leaderboard score around **~1.0%**
-(RHAE-based), which would exceed current frontier closed-model scores
-(Gemini 3.1 Pro 0.37%, Claude 0.25%, Grok 0%, as of mid-2026).
+(RHAE-based) — as of early August 2026 that would exceed the public
+leaderboard's frontier closed-model scores (Gemini 3.1 Pro 0.37%, Claude
+0.25%, Grok 0%), but verify the live leaderboard before treating these as a
+fixed bar; they will move.
 
 Primary success criterion is **score**, not architectural purity. The design
 favors reusing ideas already proven by top open community solutions (Reki,
@@ -14,12 +16,24 @@ Forge — June 2026 milestone) over inventing from scratch, while keeping the
 code ours and fully ablation-instrumented so we know which piece is earning
 points.
 
+**Delivery window:** this is a 5-day build (today is Day 1, due Day 5) done
+alongside a teammate using Codex. See [`AGENTS.md`](../../../AGENTS.md) and
+[`docs/TEAM_WORKFLOW.md`](../../TEAM_WORKFLOW.md) for the shared team
+contract, day-by-day schedule, and the Cerebras development-only backend
+this design's `ModelBackend` protocol must accommodate.
+
 ## Background / Constraints
 
 - **Scoring (RHAE):** per-level score = `(human_median_actions /
-  agent_actions)^2`, capped at 1.15. Inefficient solves are penalized
-  quadratically — "eventually correct but slow" scores near zero. Action
-  efficiency matters as much as correctness.
+  agent_actions)^2`, commonly cited as capped at 1.15 — but the exact cap
+  wording (applied before or after squaring) has been reported
+  inconsistently across the toolkit changelog vs. the competition data page.
+  Pin the live competition rules/toolkit version before trusting any local
+  RHAE calculation; this only matters once `eval/run_ablation.py` computes
+  real RHAE (a later phase), not for the local model-free skeleton.
+  Inefficient solves are penalized quadratically either way — "eventually
+  correct but slow" scores near zero. Action efficiency matters as much as
+  correctness.
 - **Kaggle sandbox:** no internet access during evaluation. No closed APIs
   (GPT/Claude/Gemini) allowed — the submitted model must be local, open-weight
   (Gemma-4-31B, per this project's target).
@@ -47,7 +61,14 @@ points.
   RTX 4060.
 - **Dev environment split:** Colab Pro (A100/L4) is the real dev+eval loop
   for anything that loads the model. Local RTX 4060 is only for
-  model-free unit tests (perception/heuristics/budget logic).
+  model-free unit tests (perception/heuristics/budget logic). Cerebras
+  Inference Cloud is a fourth, network-based dev lane: it currently serves
+  `gemma-4-31b` (preview, verified August 2026) with **both text and image
+  input**, at ~1850 tok/s — a genuinely useful fast proxy for the same
+  model family, not a generic unrelated model. It's still preview-status,
+  possibly different quantization/serving than our Colab/Kaggle deployment,
+  and never callable from the Kaggle submission. See `AGENTS.md`'s
+  "Cerebras development boundary" for the full contract.
 - **Prior art referenced (ideas only, not copied code):** Reki
   (vision-LLM-as-policy, labeled-frame rendering, JSON single-action output,
   periodic reflection memory, numpy click heuristic with "dead signature"
@@ -66,9 +87,11 @@ points.
 - Not targeting the $700K grand prize (100% RHAE) or any milestone prize
   submission logistics (open-sourcing under CC0/MIT-0, etc.) in this design.
   Purely a personal score target.
-- Not supporting any model other than Gemma-4-31B. No multi-model
-  abstraction beyond what's needed to swap dev (Colab) vs. eval (Kaggle)
-  hosting of the same model.
+- Not supporting any model other than Gemma-4-31B as the *submitted* policy.
+  The `ModelBackend` protocol accommodates multiple **hosting** lanes of
+  that same target (fake/test, Cerebras dev-proxy, Colab, Kaggle) — that's
+  a backend-implementation detail, not a multi-model architecture. Cerebras
+  is never in the Kaggle runtime, under any condition.
 - The Duck's code-writing/REPL approach is not part of this baseline. Noted
   as a possible future direction, not designed here.
 
@@ -89,7 +112,10 @@ ARC-AGI-3-Kaggle-Starter/       (official starter, cloned as-is)
 │   ├── memory.py                 # reflection memory, refreshed every N steps
 │   ├── heuristics.py             # numpy click-candidate scan, dead-signature tracking (no GPU)
 │   ├── budget.py                  # RHAE-aware action budget / safe-mode trigger
-│   ├── model_backend.py          # loads Gemma-4-31B (Colab vs Kaggle rtx6000), single load point
+│   ├── model_backend.py          # ModelBackend protocol, fake + Gemma backends
+│   ├── secret_scan.py            # scans generated artifacts for leaked credentials
+│   ├── backends/
+│   │   └── cerebras_dev.py       # dev-only Cerebras proxy (never in Kaggle)
 │   └── config.py                 # typed, serializable config; resolves env vars at startup only
 ├── eval/
 │   └── run_ablation.py         # sweeps config combinations over `make play-local` games, logs per-game RHAE
