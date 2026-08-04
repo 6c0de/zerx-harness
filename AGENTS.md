@@ -26,11 +26,16 @@ Code, and any other coding agent working on this project. `CLAUDE.md` and
 any Codex-specific file must point here rather than duplicate these rules.
 
 Repository state — not an AI chat transcript — is project memory. Before
-working, read this `AGENTS.md`, `docs/TEAM_WORKFLOW.md`, `docs/HANDOFF.md`,
-the active experiment record, and the actual repository README/build
-instructions. Do not rely on an earlier Codex or Claude conversation; if a
-chat conclusion matters, record it in Git as a decision, experiment result,
-or handoff note.
+working, read this `AGENTS.md`, `STRATEGY.md`, `docs/TEAM_WORKFLOW.md`,
+`docs/HANDOFF.md`, the active experiment record, and the actual repository
+README/build instructions. Do not rely on an earlier Codex or Claude
+conversation; if a chat conclusion matters, record it in Git as a decision,
+experiment result, or handoff note.
+
+`STRATEGY.md` records prior-art analysis (ReKi, Murad/Forge VLM,
+ProjectForty2 FORGE, Tycho), adoption decisions, trade-offs, and experiment
+sequencing. It does not override the operating, safety, ownership,
+evaluation-integrity, or deployment rules in this file.
 
 One person owns a branch/experiment at a time. Do not have two agents (or
 two people) edit the same working tree concurrently — exchange work through
@@ -184,7 +189,7 @@ Baseline features:
 
 Out of baseline scope:
 
-- Forge-style arbiter or multiple candidate generators as default behavior;
+- Murad/Forge VLM-style arbiter or multiple candidate generators as default behavior;
 - multi-model abstraction beyond Colab/Kaggle/Cerebras hosting proxies of
   the same target model;
 - code-writing or REPL agents inspired by The Duck;
@@ -194,6 +199,27 @@ Out of baseline scope:
 - milestone-prize publication logistics.
 
 An arbiter may be added later only as an off-by-default experiment with a stated hypothesis and baseline comparison.
+
+Never, under any circumstance, at any phase:
+
+- read hidden game/engine source, runtime fields, or internal state not
+  exposed through the official frame/action API;
+- clone or reconstruct the real environment's internal state for search;
+- take unscored counterfactual actions against the real implementation;
+- branch behavior on a specific game ID, or use a public-game lookup table
+  or memorized solution;
+- run unbounded search (BFS/A*/IDDFS without an explicit node/time budget);
+- add a CNN or other trained-fallback component without a stated
+  training/evaluation case;
+- treat public-game aggregate score as evidence of private-leaderboard
+  performance (see `STRATEGY.md`'s Tycho-numbers caveat — public-game
+  scores in the 79–100 RHAE range are a real but different measurement
+  than the hidden leaderboard).
+
+These come from `STRATEGY.md`'s prior-art review (ProjectForty2 FORGE, in
+particular, used source-assisted state cloning and hidden-field
+inspection — excluded here on both competition-integrity and
+generalization grounds).
 
 ## Required control flow
 

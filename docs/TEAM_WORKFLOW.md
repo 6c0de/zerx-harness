@@ -2,10 +2,14 @@
 
 Tool-neutral: Codex and Claude Code follow the same repository contract in
 [`AGENTS.md`](../AGENTS.md). This file is the day-by-day shape of the work;
-`AGENTS.md` is the rulebook. For Day 1's local model-free skeleton, the
+`AGENTS.md` is the rulebook; [`STRATEGY.md`](../STRATEGY.md) is what
+strategic hypotheses to test and why (prior-art adoption decisions,
+experiment ladder). For Day 1's local model-free skeleton, the
 authoritative bite-sized steps are in
 [`docs/superpowers/plans/2026-08-03-arc-agi3-local-skeleton.md`](superpowers/plans/2026-08-03-arc-agi3-local-skeleton.md)
 — this file doesn't repeat them, it says where they sit in the schedule.
+None of these three substitute for `HANDOFF.md`, experiment records,
+commits, resolved configurations, or test results.
 
 ## Operating model
 
@@ -202,8 +206,14 @@ validation; expanding the sprint into training/distillation work.
 ## Team controls
 
 - One owner, branch, and immutable experiment ID at a time.
-- One shared result table: commit, config hash, backend, GPU, games/seeds,
-  score, actions, latency, repairs, fallbacks, conclusion.
+- One shared result table: prior-art feature under test, baseline
+  experiment ID, primary changed factor, model/prompt/image configuration,
+  commit, config hash, backend, GPU, games/seeds, scored actions, resets,
+  completion/RHAE, model calls, latency, inference cost, repairs,
+  fallbacks, transition-evidence completeness, world-model
+  exactness/coverage (once `world_model_on` is exercised — see
+  `STRATEGY.md`), planner recommendation/validation/following (once
+  `planner_on` is exercised), and a decision: promote, reject, or rerun.
 - Peer review before any Colab sweep or Kaggle run.
 - Never put credentials in Git, Drive notebooks, prompts, logs, or result
   files.

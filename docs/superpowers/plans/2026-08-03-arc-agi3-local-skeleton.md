@@ -2,11 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Import the official ARC-AGI-3 Kaggle starter kit and build the complete `zerx/` model-free package (perception, heuristics, memory, budget, JSON policy parsing/repair, decide() orchestrator) plus a thin harness adapter, fully unit-tested on CPU with no model load — the "Local → Colab" promotion gate from `AGENTS.md`.
+**Goal:** Import the official ARC-AGI-3 Kaggle starter kit and build the complete `zerx/` model-free package (perception, heuristics, memory, budget, JSON policy parsing/repair, decide() orchestrator, evidence ledger) plus a thin harness adapter, fully unit-tested on CPU with no model load — the "Local → Colab" promotion gate from `AGENTS.md`.
 
-**Architecture:** A model-free `zerx/` package implements perception, heuristics, memory, budget, and JSON policy parsing/repair against our own internal types (`zerx/types.py`), fully unit-tested without GPU or model access via a `ModelBackend` protocol and `FakeModelBackend` test double. A thin `agent/my_agent.py` adapter — added on top of the vendored official starter — translates the real upstream Frame/GameAction API into these internal types and back, isolating the one place real-API uncertainty lives. `eval/run_ablation.py` owns the experiment-record schema and config-sweep generator used for ablation once the adapter is wired to real games.
+**Architecture:** A model-free `zerx/` package implements perception, heuristics, memory, budget, JSON policy parsing/repair, and an evidence-first transition ledger against our own internal types (`zerx/types.py`), fully unit-tested without GPU or model access via a `ModelBackend` protocol and `FakeModelBackend` test double. A thin `agent/my_agent.py` adapter — added on top of the vendored official starter — translates the real upstream Frame/GameAction API into these internal types and back, finalizes each transition once the next frame exists, feeds click outcomes back into graded negative affordances, and isolates the one place real-API uncertainty lives. `eval/run_ablation.py` owns the experiment-record schema and config-sweep generator used for ablation once the adapter is wired to real games.
 
-**Tech Stack:** Python 3.12 (starter's `arc-agi` package requirement), pytest, numpy (heuristics scoring only), stdlib `dataclasses`/`json`/`hashlib`/`re`/`random`/`urllib`, the official `arcprize/ARC-AGI-3-Kaggle-Starter` framework (exact import paths confirmed in Task 1, not assumed), its `make` workflow (`make setup`, `make play-local`, `make verify-local`), and a development-only Cerebras Inference Cloud backend (`gemma-4-31b`, network API, mocked in the default test suite).
+**Tech Stack:** Python 3.12 (starter's `arc-agi` package requirement), pytest, numpy (heuristics scoring only), stdlib `dataclasses`/`json`/`hashlib`/`re`/`random`/`urllib`/`collections`, the official `arcprize/ARC-AGI-3-Kaggle-Starter` framework (exact import paths confirmed in Task 1, not assumed), its `make` workflow (`make setup`, `make play-local`, `make verify-local`), and a development-only Cerebras Inference Cloud backend (`gemma-4-31b`, network API, mocked in the default test suite).
+
+## Strategy alignment
+
+[`STRATEGY.md`](../../../STRATEGY.md) is the prior-art and experiment guide (ReKi, Murad/Forge VLM, ProjectForty2 FORGE, Tycho). This plan implements `baseline-100-minimal` plus the transition-ledger portion of `baseline-110-evidence` — the minimum Zerx foundation, with evidence recording as baseline infrastructure (Task 13) and graded negative affordances (Task 5) since both are cheap and the modules they touch hadn't shipped yet. Structured hypothesis/belief tracking, executable world models, planners, and builder agents are later, explicitly isolated experiments (`baseline-120` onward) — not part of this plan. If a simple module this plan builds (e.g. `zerx/memory.py`'s free-text `MemoryState`) looks like it "should" be the richer Tycho-style structured version, it shouldn't be — that's deliberately deferred, see `STRATEGY.md`.
 
 ## Global Constraints
 
@@ -32,7 +36,7 @@
 - Create: `docs/superpowers/experiments/baseline-000.md`
 
 **Interfaces:**
-- Produces: the real `Agent`, `GameAction`, and frame-data type import paths (recorded in `baseline-000.md`) that Task 13's adapter depends on.
+- Produces: the real `Agent`, `GameAction`, and frame-data type import paths (recorded in `baseline-000.md`) that Task 14's adapter depends on.
 
 - [ ] **Step 1: Clone the upstream starter into a scratch directory**
 
@@ -68,7 +72,7 @@ Open `agent/my_agent.py` (the file just copied in Step 3) and read it fully. It 
 - The exact attribute/method names used to read the grid, the list of currently-legal actions, and the game-over/terminal state off a frame object.
 - The exact method used to attach `{"x", "y"}` data to `GameAction.ACTION6` (the README shows `env.step(GameAction.ACTION6, data={...})` for the standalone agent framework, but the Kaggle starter's `MyAgent.choose_action` may return the action differently — check what the random baseline actually returns).
 
-These go into `baseline-000.md` in Step 7. Task 13 depends on this being accurate, not assumed.
+These go into `baseline-000.md` in Step 7. Task 14 depends on this being accurate, not assumed.
 
 - [ ] **Step 6: Run the unchanged starter baseline**
 
@@ -117,7 +121,7 @@ Expected: commit succeeds; `git status` is clean.
 - Create: `requirements-zerx.txt`
 
 **Interfaces:**
-- Produces: `ActionName` (Enum), `Action` (validated dataclass), `GameFrame` (dataclass) — used by every other `zerx` module and by Task 13's adapter.
+- Produces: `ActionName` (Enum), `Action` (validated dataclass), `GameFrame` (dataclass) — used by every other `zerx` module and by Task 14's adapter.
 
 - [ ] **Step 1: Add test tooling to the venv**
 
@@ -641,7 +645,14 @@ git commit -m "feat(zerx): add perception (ascii grid + connected-component labe
 
 ---
 
-## Task 5: `zerx/heuristics.py` — click candidates and dead-signature tracking
+## Task 5: `zerx/heuristics.py` — click candidates and graded negative affordances
+
+Per `STRATEGY.md`'s "soft negative affordances": an ineffective click
+down-ranks an object signature's future score instead of permanently
+banning it, and a later effective use of the same signature recovers some
+of that penalty. This is a small, self-contained change to a module that
+hasn't shipped yet, so it ships graded from the start rather than as a
+hard-exclusion set that gets rewritten later.
 
 **Files:**
 - Create: `zerx/heuristics.py`
@@ -649,7 +660,7 @@ git commit -m "feat(zerx): add perception (ascii grid + connected-component labe
 
 **Interfaces:**
 - Consumes: `LabeledObject`, `PerceptionResult` from `zerx/perception.py`.
-- Produces: `DeadSignatureTracker` (`.mark_dead(obj)`, `.is_dead(obj)`, `.reset()`), `ClickCandidate` (`.x`, `.y`, `.object_label`, `.score`), `rank_click_candidates(perception, dead_signatures, grid_size=64) -> List[ClickCandidate]` (sorted highest score first).
+- Produces: `DeadSignatureTracker` (`.record_outcome(obj, effective: bool)`, `.penalty(obj) -> float` in `[0.0, 1.0]`, `.reset()`), `ClickCandidate` (`.x`, `.y`, `.object_label`, `.score`), `rank_click_candidates(perception, affordance, grid_size=64) -> List[ClickCandidate]` (sorted highest score first — penalized objects are down-ranked, never removed). Who calls `record_outcome` and when: not this module — that requires observing the *next* frame, which is the harness adapter's job (Task 14), using `zerx/transitions.py` (Task 13) to know whether a click was effective.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -663,20 +674,45 @@ def _obj(label, color, cells):
     return LabeledObject(label=label, color=color, cells=tuple(cells))
 
 
-def test_dead_signature_tracker_marks_and_checks():
+def test_new_signature_has_zero_penalty():
     tracker = DeadSignatureTracker()
     obj = _obj("obj0", color=5, cells=[(1, 1)])
-    assert not tracker.is_dead(obj)
-    tracker.mark_dead(obj)
-    assert tracker.is_dead(obj)
+    assert tracker.penalty(obj) == 0.0
 
 
-def test_dead_signature_reset_clears():
+def test_ineffective_outcome_increases_penalty():
     tracker = DeadSignatureTracker()
     obj = _obj("obj0", color=5, cells=[(1, 1)])
-    tracker.mark_dead(obj)
+    tracker.record_outcome(obj, effective=False)
+    assert tracker.penalty(obj) > 0.0
+
+
+def test_effective_outcome_recovers_penalty():
+    tracker = DeadSignatureTracker()
+    obj = _obj("obj0", color=5, cells=[(1, 1)])
+    tracker.record_outcome(obj, effective=False)
+    penalty_after_fail = tracker.penalty(obj)
+    tracker.record_outcome(obj, effective=True)
+    assert tracker.penalty(obj) < penalty_after_fail
+
+
+def test_penalty_stays_within_zero_one_range():
+    tracker = DeadSignatureTracker()
+    obj = _obj("obj0", color=5, cells=[(1, 1)])
+    for _ in range(10):
+        tracker.record_outcome(obj, effective=False)
+    assert tracker.penalty(obj) == 1.0
+    for _ in range(10):
+        tracker.record_outcome(obj, effective=True)
+    assert tracker.penalty(obj) == 0.0
+
+
+def test_reset_clears_penalties():
+    tracker = DeadSignatureTracker()
+    obj = _obj("obj0", color=5, cells=[(1, 1)])
+    tracker.record_outcome(obj, effective=False)
     tracker.reset()
-    assert not tracker.is_dead(obj)
+    assert tracker.penalty(obj) == 0.0
 
 
 def test_rank_click_candidates_empty_perception_returns_empty():
@@ -684,12 +720,15 @@ def test_rank_click_candidates_empty_perception_returns_empty():
     assert rank_click_candidates(result, DeadSignatureTracker()) == []
 
 
-def test_rank_click_candidates_excludes_dead_signatures():
+def test_rank_click_candidates_down_ranks_but_keeps_fully_penalized_object():
     obj = _obj("obj0", color=5, cells=[(1, 1)])
     tracker = DeadSignatureTracker()
-    tracker.mark_dead(obj)
+    for _ in range(10):
+        tracker.record_outcome(obj, effective=False)
     result = PerceptionResult(ascii_grid="", objects=(obj,))
-    assert rank_click_candidates(result, tracker) == []
+    candidates = rank_click_candidates(result, tracker)
+    assert len(candidates) == 1  # still present, never hard-excluded
+    assert candidates[0].score == 0.0
 
 
 def test_rank_click_candidates_prefers_smaller_object():
@@ -719,12 +758,14 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'zerx.heuristics'`.
 
 ```python
 """No-GPU fallback/candidate layer: numpy-based click-candidate scoring and
-dead-signature tracking (stop re-clicking object types that never helped).
+a graded, decaying negative-affordance tracker (STRATEGY.md's "soft
+negative affordances" — down-rank an ineffective object signature instead
+of permanently banning it).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Set, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -740,21 +781,34 @@ def _signature(obj: LabeledObject) -> Tuple[int, int]:
 
 
 class DeadSignatureTracker:
-    """Tracks object signatures that produced no useful effect when clicked,
-    so heuristics stop proposing them.
+    """Per-signature penalty in [0.0, 1.0]. An ineffective click raises it
+    by `penalty_step` (clamped at 1.0); an effective use of the same
+    signature lowers it by `recovery_step` (clamped at 0.0). A signature
+    that has never been observed has penalty 0.0 — it starts trusted.
     """
 
-    def __init__(self) -> None:
-        self._dead: Set[Tuple[int, int]] = set()
+    def __init__(self, penalty_step: float = 0.35, recovery_step: float = 0.5) -> None:
+        self._penalty: Dict[Tuple[int, int], float] = {}
+        self._penalty_step = penalty_step
+        self._recovery_step = recovery_step
 
-    def mark_dead(self, obj: LabeledObject) -> None:
-        self._dead.add(_signature(obj))
+    def record_outcome(self, obj: LabeledObject, effective: bool) -> None:
+        sig = _signature(obj)
+        current = self._penalty.get(sig, 0.0)
+        if effective:
+            current = max(0.0, current - self._recovery_step)
+        else:
+            current = min(1.0, current + self._penalty_step)
+        if current == 0.0:
+            self._penalty.pop(sig, None)
+        else:
+            self._penalty[sig] = current
 
-    def is_dead(self, obj: LabeledObject) -> bool:
-        return _signature(obj) in self._dead
+    def penalty(self, obj: LabeledObject) -> float:
+        return self._penalty.get(_signature(obj), 0.0)
 
     def reset(self) -> None:
-        self._dead.clear()
+        self._penalty.clear()
 
 
 @dataclass(frozen=True)
@@ -772,19 +826,21 @@ def _object_center(obj: LabeledObject) -> Tuple[int, int]:
 
 def rank_click_candidates(
     perception: PerceptionResult,
-    dead_signatures: DeadSignatureTracker,
+    affordance: DeadSignatureTracker,
     grid_size: int = 64,
 ) -> List[ClickCandidate]:
-    """Score objects by "small, rare-colored, button-like" heuristics.
-    Smaller objects and less-common colors score higher; objects matching a
-    known-dead signature are excluded entirely.
+    """Score objects by "small, rare-colored, button-like" heuristics, then
+    scale each score by `(1 - penalty)`. Smaller objects and less-common
+    colors score higher; penalized signatures rank lower but are always
+    still returned — ranking, not exclusion, is how "soft" affordances
+    stay soft.
     """
-    live_objects = [o for o in perception.objects if not dead_signatures.is_dead(o)]
-    if not live_objects:
+    objects = perception.objects
+    if not objects:
         return []
 
-    sizes = np.array([o.size for o in live_objects], dtype=np.float64)
-    colors = [o.color for o in live_objects]
+    sizes = np.array([o.size for o in objects], dtype=np.float64)
+    colors = [o.color for o in objects]
     color_counts = {c: colors.count(c) for c in set(colors)}
     rarity = np.array([1.0 / color_counts[c] for c in colors], dtype=np.float64)
 
@@ -796,13 +852,12 @@ def rank_click_candidates(
     combined = 0.5 * size_score + 0.5 * rarity_score
 
     candidates = []
-    for obj, score in zip(live_objects, combined):
+    for obj, base_score in zip(objects, combined):
+        score = float(base_score) * (1.0 - affordance.penalty(obj))
         cx, cy = _object_center(obj)
         cx = min(max(cx, 0), grid_size - 1)
         cy = min(max(cy, 0), grid_size - 1)
-        candidates.append(
-            ClickCandidate(x=cx, y=cy, object_label=obj.label, score=float(score))
-        )
+        candidates.append(ClickCandidate(x=cx, y=cy, object_label=obj.label, score=score))
 
     candidates.sort(key=lambda c: c.score, reverse=True)
     return candidates
@@ -813,13 +868,13 @@ def rank_click_candidates(
 ```bash
 .venv/bin/pytest tests/test_heuristics.py -v
 ```
-Expected: 6 passed.
+Expected: 9 passed.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add zerx/heuristics.py tests/test_heuristics.py
-git commit -m "feat(zerx): add click-candidate heuristic and dead-signature tracker"
+git commit -m "feat(zerx): add click-candidate heuristic with graded negative affordances"
 ```
 
 ---
@@ -1709,7 +1764,7 @@ git commit -m "feat(zerx): add JSON action parsing with bounded deterministic re
 
 **Interfaces:**
 - Consumes: `Config` (Task 3), `PerceptionResult`/`perceive` (Task 4), `DeadSignatureTracker`/`rank_click_candidates` (Task 5), `MemoryState`/`maybe_refresh` (Task 6), `BudgetSignal`/`evaluate_budget` (Task 7), `ModelBackend` (Task 8), `GameFrame`/`Action`/`ActionName` (Task 2), `parse_action` (Task 11, same file).
-- Produces: `Decision` (`.action: Action`, `.source: str`, `.repaired: bool`, `.budget: Optional[BudgetSignal]`), `build_prompt(perception, memory) -> str`, `decide(frame, history, memory, dead_signatures, config, backend, actions_taken) -> Tuple[Decision, MemoryState]` — never raises, implements the control flow from `AGENTS.md`.
+- Produces: `Decision` (`.action: Action`, `.source: str`, `.repaired: bool`, `.budget: Optional[BudgetSignal]`, `.target_object_label: Optional[str]` — set only when the action came from a click candidate, i.e. `source in {"heuristic", "fallback_heuristic"}`; this is what Task 14's adapter feeds back into `DeadSignatureTracker.record_outcome` once the next frame shows whether the click was effective), `build_prompt(perception, memory) -> str`, `decide(frame, history, memory, dead_signatures, config, backend, actions_taken) -> Tuple[Decision, MemoryState]` — never raises, implements the control flow from `AGENTS.md`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1902,6 +1957,36 @@ def test_decide_random_fallback_stays_within_legal_actions_and_never_raises():
     )
     assert decision.action.name == ActionName.ACTION7
     assert decision.source == "fallback_random"
+
+
+def test_decide_records_target_object_label_on_heuristic_source():
+    frame = _frame([[0, 0], [0, 5]])
+    backend = FakeModelBackend(responses=[])
+    decision, _ = decide(
+        frame=frame,
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(heuristic_first=True, heuristic_confidence_threshold=0.0),
+        backend=backend,
+        actions_taken=0,
+    )
+    assert decision.source == "heuristic"
+    assert decision.target_object_label == "obj0"
+
+
+def test_decide_leaves_target_object_label_none_on_model_source():
+    decision, _ = decide(
+        frame=_blank_frame(),
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(),
+        backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
+        actions_taken=0,
+    )
+    assert decision.source == "model"
+    assert decision.target_object_label is None
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1936,6 +2021,7 @@ class Decision:
     source: str  # "model" | "heuristic" | "fallback_heuristic" | "fallback_deterministic" | "fallback_random" | "reset"
     repaired: bool = False
     budget: Optional[BudgetSignal] = None
+    target_object_label: Optional[str] = None
 
 
 _FALLBACK_PREFERENCE = (
@@ -2026,7 +2112,15 @@ def decide(
         )
 
     if heuristic_action is not None:
-        return Decision(action=heuristic_action, source="heuristic", budget=budget), new_memory
+        return (
+            Decision(
+                action=heuristic_action,
+                source="heuristic",
+                budget=budget,
+                target_object_label=top.object_label,
+            ),
+            new_memory,
+        )
 
     try:
         raw = backend.generate(build_prompt(perception, new_memory))
@@ -2047,6 +2141,7 @@ def decide(
                 action=Action(name=ActionName.ACTION6, x=top.x, y=top.y),
                 source="fallback_heuristic",
                 budget=budget,
+                target_object_label=top.object_label,
             ),
             new_memory,
         )
@@ -2076,7 +2171,7 @@ def decide(
 ```bash
 .venv/bin/pytest tests/test_policy_decide.py -v
 ```
-Expected: 10 passed.
+Expected: 12 passed.
 
 - [ ] **Step 5: Run the full local suite**
 
@@ -2094,13 +2189,266 @@ git commit -m "feat(zerx): add decide() orchestrator wiring perception/heuristic
 
 ---
 
-## Task 13: `agent/my_agent.py` — thin harness adapter
+## Task 13: `zerx/transitions.py` — evidence-first transition ledger
+
+Per `STRATEGY.md`'s adoption of Tycho's evidence discipline: this is
+baseline infrastructure, not a gated feature. It costs no model calls and
+no action budget — it's pure bookkeeping over frames we already have.
+
+**Files:**
+- Create: `zerx/transitions.py`
+- Test: `tests/test_transitions.py`
+
+**Interfaces:**
+- Consumes: `GameFrame`, `Action`, `ActionName` from `zerx/types.py` (Task 2).
+- Produces: `TransitionRecord` (frozen dataclass: `step`, `before_hash`, `action`, `after_hash`, `changed_pixels`, `change_bbox`, `legal_before`, `legal_after`, `score_delta`, `terminal`, `repeated_state`, plus an `.effective` property), `TransitionLedger` (`.begin(before_frame, action)`, `.finalize(after_frame) -> Optional[TransitionRecord]`, `.reset()`). `begin()`/`finalize()` are two calls straddling the harness's next `choose_action` invocation — see Task 14, which is the only caller. Never infer a transition's outcome before the next frame exists (this is exactly the ordering the two-method split enforces).
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/test_transitions.py`:
+```python
+from zerx.transitions import TransitionLedger
+from zerx.types import Action, ActionName, GameFrame
+
+DEFAULT_LEGAL = frozenset({ActionName.ACTION1, ActionName.ACTION2, ActionName.ACTION5})
+
+
+def _frame(grid, legal=None, score=0, is_game_over=False):
+    return GameFrame(
+        grid=tuple(tuple(row) for row in grid),
+        legal_actions=legal if legal is not None else DEFAULT_LEGAL,
+        is_game_over=is_game_over,
+        score=score,
+    )
+
+
+def test_finalize_without_begin_returns_none():
+    ledger = TransitionLedger()
+    assert ledger.finalize(_frame([[0]])) is None
+
+
+def test_records_basic_transition_with_diff():
+    ledger = TransitionLedger()
+    before = _frame([[0, 0], [0, 0]])
+    after = _frame([[0, 0], [0, 5]])
+    action = Action(name=ActionName.ACTION1)
+    ledger.begin(before, action)
+    record = ledger.finalize(after)
+    assert record.action == action
+    assert record.changed_pixels == 1
+    assert record.change_bbox == (1, 1, 1, 1)
+    assert record.terminal is False
+
+
+def test_no_change_is_flagged_repeated_and_not_effective():
+    ledger = TransitionLedger()
+    frame = _frame([[0, 0], [0, 5]])
+    ledger.begin(frame, Action(name=ActionName.ACTION1))
+    record = ledger.finalize(frame)
+    assert record.changed_pixels == 0
+    assert record.change_bbox is None
+    assert record.repeated_state is True
+    assert record.effective is False
+
+
+def test_score_delta_and_terminal_make_a_transition_effective_without_pixel_change():
+    before = _frame([[0]], score=1)
+    after = _frame([[0]], score=3, is_game_over=True)
+    ledger = TransitionLedger()
+    ledger.begin(before, Action(name=ActionName.ACTION5))
+    record = ledger.finalize(after)
+    assert record.score_delta == 2
+    assert record.terminal is True
+    assert record.effective is True
+
+
+def test_step_increments_across_begin_finalize_pairs():
+    ledger = TransitionLedger()
+    frame = _frame([[0]])
+    ledger.begin(frame, Action(name=ActionName.ACTION1))
+    first = ledger.finalize(frame)
+    ledger.begin(frame, Action(name=ActionName.ACTION1))
+    second = ledger.finalize(frame)
+    assert first.step == 0
+    assert second.step == 1
+
+
+def test_reset_clears_pending_transition():
+    ledger = TransitionLedger()
+    ledger.begin(_frame([[0]]), Action(name=ActionName.ACTION1))
+    ledger.reset()
+    assert ledger.finalize(_frame([[0]])) is None
+
+
+def test_detects_loop_beyond_the_immediate_step():
+    ledger = TransitionLedger()
+    frame_a = _frame([[0, 0], [0, 0]])
+    frame_b = _frame([[0, 0], [0, 5]])
+    ledger.begin(frame_a, Action(name=ActionName.ACTION1))
+    ledger.finalize(frame_b)
+    ledger.begin(frame_b, Action(name=ActionName.ACTION2))
+    record = ledger.finalize(frame_a)  # back to frame_a's exact state
+    assert record.repeated_state is True
+
+
+def test_records_legal_actions_before_and_after():
+    before = _frame([[0]], legal=frozenset({ActionName.ACTION1}))
+    after = _frame([[0]], legal=frozenset({ActionName.ACTION1, ActionName.ACTION5}))
+    ledger = TransitionLedger()
+    ledger.begin(before, Action(name=ActionName.ACTION1))
+    record = ledger.finalize(after)
+    assert record.legal_before == frozenset({ActionName.ACTION1})
+    assert record.legal_after == frozenset({ActionName.ACTION1, ActionName.ACTION5})
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+```bash
+.venv/bin/pytest tests/test_transitions.py -v
+```
+Expected: FAIL — `ModuleNotFoundError: No module named 'zerx.transitions'`.
+
+- [ ] **Step 3: Implement `zerx/transitions.py`**
+
+```python
+"""Evidence-first transition ledger (STRATEGY.md's Tycho-informed
+adoption). Pairs each action with the *next* frame into a
+TransitionRecord — never inferred before that frame exists. This is
+baseline infrastructure: it costs no model calls and no action budget, and
+must work even when memory and heuristics are off.
+"""
+from __future__ import annotations
+
+import hashlib
+from collections import deque
+from dataclasses import dataclass
+from typing import Deque, FrozenSet, Optional, Tuple
+
+from zerx.types import Action, ActionName, GameFrame
+
+
+def _grid_hash(frame: GameFrame) -> str:
+    flat = ",".join(str(v) for row in frame.grid for v in row)
+    return hashlib.sha256(flat.encode("utf-8")).hexdigest()[:16]
+
+
+def _diff(
+    before: GameFrame, after: GameFrame
+) -> Tuple[int, Optional[Tuple[int, int, int, int]]]:
+    height = len(before.grid)
+    width = len(before.grid[0]) if height else 0
+    changed = [
+        (x, y)
+        for y in range(height)
+        for x in range(width)
+        if before.grid[y][x] != after.grid[y][x]
+    ]
+    if not changed:
+        return 0, None
+    xs = [c[0] for c in changed]
+    ys = [c[1] for c in changed]
+    return len(changed), (min(xs), min(ys), max(xs), max(ys))
+
+
+@dataclass(frozen=True)
+class TransitionRecord:
+    step: int
+    before_hash: str
+    action: Action
+    after_hash: str
+    changed_pixels: int
+    change_bbox: Optional[Tuple[int, int, int, int]]
+    legal_before: FrozenSet[ActionName]
+    legal_after: FrozenSet[ActionName]
+    score_delta: int
+    terminal: bool
+    repeated_state: bool
+
+    @property
+    def effective(self) -> bool:
+        """An action "did something" if it changed the grid or the score.
+        Feeds zerx.heuristics.DeadSignatureTracker.record_outcome.
+        """
+        return self.changed_pixels > 0 or self.score_delta != 0
+
+
+class TransitionLedger:
+    """Stateful pairing of "action taken against frame X" with "frame X+1
+    arrived". `begin()` records a pending action; `finalize()` — called at
+    the start of the *next* choose_action, once the new frame exists —
+    completes the record. `history_size` bounds a recent-hash window used
+    for loop/repeated-state detection beyond the immediate before/after
+    pair.
+    """
+
+    def __init__(self, history_size: int = 20) -> None:
+        self._pending: Optional[Tuple[int, GameFrame, Action]] = None
+        self._step = 0
+        self._recent_hashes: Deque[str] = deque(maxlen=history_size)
+
+    def begin(self, before: GameFrame, action: Action) -> None:
+        self._pending = (self._step, before, action)
+        self._recent_hashes.append(_grid_hash(before))
+        self._step += 1
+
+    def finalize(self, after: GameFrame) -> Optional[TransitionRecord]:
+        if self._pending is None:
+            return None
+        step, before, action = self._pending
+        self._pending = None
+        before_hash = _grid_hash(before)
+        after_hash = _grid_hash(after)
+        changed_pixels, bbox = _diff(before, after)
+        repeated_state = after_hash in self._recent_hashes
+        return TransitionRecord(
+            step=step,
+            before_hash=before_hash,
+            action=action,
+            after_hash=after_hash,
+            changed_pixels=changed_pixels,
+            change_bbox=bbox,
+            legal_before=before.legal_actions,
+            legal_after=after.legal_actions,
+            score_delta=after.score - before.score,
+            terminal=after.is_game_over,
+            repeated_state=repeated_state,
+        )
+
+    def reset(self) -> None:
+        self._pending = None
+        self._step = 0
+        self._recent_hashes.clear()
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+```bash
+.venv/bin/pytest tests/test_transitions.py -v
+```
+Expected: 8 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add zerx/transitions.py tests/test_transitions.py
+git commit -m "feat(zerx): add evidence-first transition ledger"
+```
+
+---
+
+## Task 14: `agent/my_agent.py` — thin harness adapter
+
+This is also where the evidence ledger (Task 13) and graded negative
+affordances (Task 5) actually get wired together into a loop — neither
+module calls the other; the adapter is the one place that observes both
+"what we did" and "what happened next" per `STRATEGY.md`'s rule: never
+infer an action's consequence before the next frame exists.
 
 **Files:**
 - Modify: `agent/my_agent.py` (replace the random-baseline body imported in Task 1)
 
 **Interfaces:**
-- Consumes: `decide()`, `Decision` (Task 12), `Config` (Task 3), `MemoryState` (Task 6), `DeadSignatureTracker` (Task 5), `GemmaModelBackend` (Task 8), `GameFrame`/`Action`/`ActionName` (Task 2), and the real upstream `Agent`/`GameAction`/frame-data types recorded in `docs/superpowers/experiments/baseline-000.md` (Task 1, Step 5).
+- Consumes: `decide()`, `Decision` (Task 12), `Config` (Task 3), `MemoryState` (Task 6), `DeadSignatureTracker` (Task 5), `TransitionLedger` (Task 13), `GemmaModelBackend` (Task 8), `GameFrame`/`Action`/`ActionName` (Task 2), and the real upstream `Agent`/`GameAction`/frame-data types recorded in `docs/superpowers/experiments/baseline-000.md` (Task 1, Step 5).
 - Produces: `MyAgent` — the class the Kaggle harness imports and drives.
 
 - [ ] **Step 1: Re-read the API notes from Task 1**
@@ -2112,8 +2460,10 @@ Open `docs/superpowers/experiments/baseline-000.md` and re-read the recorded imp
 ```python
 """Thin harness adapter — translates the real upstream Frame/GameAction API
 (see docs/superpowers/experiments/baseline-000.md for the exact names) into
-zerx's internal types, delegates to zerx.policy.decide(), and translates the
-result back. Keep this file free of policy logic; it is glue only.
+zerx's internal types, delegates to zerx.policy.decide(), finalizes the
+previous transition and feeds soft-affordance outcomes back, and
+translates the result back. Keep this file free of policy logic; it is
+glue only.
 """
 from __future__ import annotations
 
@@ -2126,19 +2476,25 @@ from zerx.config import Config
 from zerx.heuristics import DeadSignatureTracker
 from zerx.memory import MemoryState
 from zerx.model_backend import GemmaModelBackend
-from zerx.policy import decide
+from zerx.perception import perceive
+from zerx.policy import Decision, decide
+from zerx.transitions import TransitionLedger
 from zerx.types import Action, ActionName, GameFrame
 
 
 def _to_game_frame(frame: "FrameData") -> GameFrame:
     """Translate the upstream frame object into our internal GameFrame.
-    Replace `frame.frame`, `frame.available_actions`, and `frame.state`
-    below with whatever Task 1's inspection actually found.
+    Replace `frame.frame`, `frame.available_actions`, `frame.state`, and
+    `frame.score` below with whatever Task 1's inspection actually found
+    (score may not exist upstream under that exact name — if there's no
+    numeric score field, default to 0 rather than guessing a wrong one;
+    score_delta then reads as always 0, which is honest, not broken).
     """
     grid = tuple(tuple(row) for row in frame.frame)
     legal = frozenset(ActionName[a.name] for a in frame.available_actions)
     is_game_over = frame.state == "GAME_OVER"
-    return GameFrame(grid=grid, legal_actions=legal, is_game_over=is_game_over)
+    score = getattr(frame, "score", 0)
+    return GameFrame(grid=grid, legal_actions=legal, is_game_over=is_game_over, score=score)
 
 
 def _to_game_action(action: Action) -> "GameAction":
@@ -2148,6 +2504,17 @@ def _to_game_action(action: Action) -> "GameAction":
     return upstream
 
 
+def _find_object_by_label(frame: GameFrame, label: str):
+    """Recompute perception just far enough to look up the LabeledObject a
+    past Decision targeted, so its outcome can be recorded. Cheap (no GPU,
+    no model call) — perception is already deterministic and pure.
+    """
+    for obj in perceive(frame).objects:
+        if obj.label == label:
+            return obj
+    return None
+
+
 class MyAgent(Agent):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -2155,7 +2522,10 @@ class MyAgent(Agent):
         self._memory = MemoryState()
         self._dead_signatures = DeadSignatureTracker()
         self._backend = GemmaModelBackend(self._config.model_revision)
+        self._transitions = TransitionLedger()
         self._actions_taken = 0
+        self._pending_decision: Decision | None = None
+        self._pending_before_frame: GameFrame | None = None
 
     def is_done(self, frames: List["FrameData"], latest_frame: "FrameData") -> bool:
         return latest_frame.state == "GAME_OVER"
@@ -2164,6 +2534,22 @@ class MyAgent(Agent):
         self, frames: List["FrameData"], latest_frame: "FrameData"
     ) -> "GameAction":
         frame = _to_game_frame(latest_frame)
+
+        # Finalize the PREVIOUS action's transition now that its result
+        # (this frame) exists. Never do this before the frame arrives.
+        record = self._transitions.finalize(frame)
+        if (
+            record is not None
+            and self._pending_decision is not None
+            and self._pending_decision.target_object_label is not None
+            and self._pending_before_frame is not None
+        ):
+            target = _find_object_by_label(
+                self._pending_before_frame, self._pending_decision.target_object_label
+            )
+            if target is not None:
+                self._dead_signatures.record_outcome(target, effective=record.effective)
+
         history: Tuple[GameFrame, ...] = tuple(_to_game_frame(f) for f in frames[-4:])
         decision, self._memory = decide(
             frame=frame,
@@ -2175,6 +2561,11 @@ class MyAgent(Agent):
             actions_taken=self._actions_taken,
         )
         self._actions_taken += 1
+
+        self._transitions.begin(frame, decision.action)
+        self._pending_decision = decision
+        self._pending_before_frame = frame
+
         return _to_game_action(decision.action)
 ```
 
@@ -2183,18 +2574,18 @@ class MyAgent(Agent):
 ```bash
 make verify-local
 ```
-Expected (once names are corrected to match the real API): completes without a Python exception. Since `GemmaModelBackend.generate()` still raises `NotImplementedError` (Task 8), a real playthrough isn't expected to succeed yet — but `AttributeError`/`ImportError` must be gone. If it still raises `NotImplementedError` from deep inside `decide()`'s `try/except Exception`, that's expected and means `decide()` correctly fell back per Task 10's tests: check that `make verify-local`'s output shows fallback actions being taken, not a crash.
+Expected (once names are corrected to match the real API): completes without a Python exception. Since `GemmaModelBackend.generate()` still raises `NotImplementedError` (Task 8), a real playthrough isn't expected to succeed yet — but `AttributeError`/`ImportError` must be gone. If it still raises `NotImplementedError` from deep inside `decide()`'s `try/except Exception`, that's expected and means `decide()` correctly fell back per Task 12's tests: check that `make verify-local`'s output shows fallback actions being taken, not a crash.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add agent/my_agent.py docs/superpowers/experiments/baseline-000.md
-git commit -m "feat(agent): wire MyAgent to zerx.policy.decide() via a thin adapter"
+git commit -m "feat(agent): wire MyAgent to decide()/transitions/soft-affordance feedback loop"
 ```
 
 ---
 
-## Task 14: `eval/run_ablation.py` — experiment record schema and config sweep
+## Task 15: `eval/run_ablation.py` — experiment record schema and config sweep
 
 **Files:**
 - Create: `eval/__init__.py` (empty)
@@ -2295,7 +2686,7 @@ Create empty `eval/__init__.py`, then:
 generator used by ablation runs. The reproducibility fields here match
 AGENTS.md's "Configuration and reproducibility" section. The actual
 "play N local games with this config" loop is wired in once
-agent/my_agent.py's harness adapter (Task 13) is exercised against real
+agent/my_agent.py's harness adapter (Task 14) is exercised against real
 games — this module owns the record format independent of that wiring.
 """
 from __future__ import annotations
@@ -2361,7 +2752,7 @@ Expected: 6 passed.
 ```bash
 .venv/bin/pytest tests/ -v
 ```
-Expected: all tests pass (Tasks 2–14). This is the "Local → Colab" promotion gate from `AGENTS.md` — full unit suite passes, fake-backend end-to-end coverage exists, terminal state returns `RESET`, malformed output reaches the documented fallback, competition-mode configuration rejects `cerebras_dev`, the secret scan passes, no model weights or secrets are committed.
+Expected: all tests pass (Tasks 2–15). This is the "Local → Colab" promotion gate from `AGENTS.md` — full unit suite passes, fake-backend end-to-end coverage exists, terminal state returns `RESET`, malformed output reaches the documented fallback, every action produces a transition record (`baseline-110-evidence` per `STRATEGY.md`), competition-mode configuration rejects `cerebras_dev`, the secret scan passes, no model weights or secrets are committed.
 
 - [ ] **Step 6: Commit**
 
@@ -2380,3 +2771,5 @@ Per the spec's scope and `AGENTS.md`/`docs/TEAM_WORKFLOW.md`'s phasing, the foll
 - Making a real (non-mocked) call to the Cerebras API — Task 9's tests all inject a fake `http_post`. A live-network Cerebras smoke test (real `CEREBRAS_API_KEY`, querying the account's actual available model IDs) is opt-in and separately marked per `AGENTS.md`, not part of this plan's default suite.
 - Running `eval/run_ablation.py`'s sweeps against real games with a real model (Cerebras or Gemma).
 - Any Kaggle packaging, `make submit`, or official submission — including the Day 1 "known-working smoke submission" `docs/TEAM_WORKFLOW.md` calls for. That's a quota-consuming, hard-to-reverse action requiring explicit user approval per `AGENTS.md`'s Kaggle gate, not something this plan automates.
+- Everything in `STRATEGY.md`'s "Adopt later" section and experiment ladder past `baseline-110-evidence`: structured belief/hypothesis tracking (`baseline-120`/`baseline-130`), the executable world model, planner, and builder specialist (`exp-200`/`exp-210`/`exp-220`). Each is a separate, isolated, off-by-default follow-on plan once this one is built and green — none of it is scaffolded here, not even behind a flag.
+- Rewriting `zerx/memory.py` into Tycho-style structured fields — `STRATEGY.md` says explicitly not to do this before `baseline-100-minimal`/`baseline-110-evidence` are stable.

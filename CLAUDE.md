@@ -9,6 +9,7 @@ duplicate or override `AGENTS.md` here.
 
 Also read before touching agent behavior or switching PCs/owners:
 
+- [`STRATEGY.md`](STRATEGY.md) — inspected prior art (ReKi, Murad/Forge VLM, ProjectForty2 FORGE, Tycho), adoption decisions, trade-offs, experiment ladder. Does not override this file or `AGENTS.md`.
 - [`docs/TEAM_WORKFLOW.md`](docs/TEAM_WORKFLOW.md) — day-by-day schedule and promotion-gate detail.
 - [`docs/HANDOFF.md`](docs/HANDOFF.md) — current branch, experiment, active Colab/Kaggle runs, next action.
 - [`docs/superpowers/specs/2026-08-03-arc-agi3-baseline-design.md`](docs/superpowers/specs/2026-08-03-arc-agi3-baseline-design.md) — design rationale.

@@ -11,10 +11,18 @@ leaderboard's frontier closed-model scores (Gemini 3.1 Pro 0.37%, Claude
 fixed bar; they will move.
 
 Primary success criterion is **score**, not architectural purity. The design
-favors reusing ideas already proven by top open community solutions (Reki,
-Forge — June 2026 milestone) over inventing from scratch, while keeping the
-code ours and fully ablation-instrumented so we know which piece is earning
-points.
+favors reusing ideas already proven by top open community solutions (ReKi,
+Murad/Forge VLM — June 2026 milestone; Tycho — evidence-discipline ideas
+added August 2026, see below) over inventing from scratch, while keeping
+the code ours and fully ablation-instrumented so we know which piece is
+earning points.
+
+**Prior-art naming:** "ReKi", "Murad/Forge VLM" (not just "Forge" — a
+second, unrelated system called "ProjectForty2 FORGE" also exists, see
+[`STRATEGY.md`](../../../STRATEGY.md)), "ProjectForty2 FORGE", and "Tycho"
+are the four systems this design was informed by. `STRATEGY.md` has the
+full comparison, adoption/rejection table, and experiment ladder — this
+spec doesn't repeat it.
 
 **Delivery window:** this is a 5-day build (today is Day 1, due Day 5) done
 alongside a teammate using Codex. See [`AGENTS.md`](../../../AGENTS.md) and
@@ -69,19 +77,24 @@ this design's `ModelBackend` protocol must accommodate.
   possibly different quantization/serving than our Colab/Kaggle deployment,
   and never callable from the Kaggle submission. See `AGENTS.md`'s
   "Cerebras development boundary" for the full contract.
-- **Prior art referenced (ideas only, not copied code):** Reki
+- **Prior art referenced (ideas only, not copied code):** ReKi
   (vision-LLM-as-policy, labeled-frame rendering, JSON single-action output,
   periodic reflection memory, numpy click heuristic with "dead signature"
-  filtering to stop re-clicking useless object types) and Forge (same core
-  idea wrapped in a generator/arbiter framework — notably, their
+  filtering to stop re-clicking useless object types) and Murad/Forge VLM
+  (same core idea wrapped in a generator/arbiter framework — notably, their
   *best-scoring* profile had the arbiter and other extra machinery turned
   off). Both built on the official GPT-OSS-120B template, swapped to
-  Gemma-4-31B.
+  Gemma-4-31B. ProjectForty2 FORGE (a different, unrelated system) used
+  source-assisted state cloning and hidden-field inspection — explicitly
+  rejected here, see `AGENTS.md`'s hard "never, under any circumstance"
+  list. Tycho (persistent evidence workspace, optional executable world
+  model, exact transition verification) contributed the evidence-first
+  design below; see `STRATEGY.md` for the full analysis.
 
 ## Non-goals
 
-- Not building the arbiter/multi-candidate-generator layer from Forge as a
-  default-on feature — Forge's own ablation showed it hurt their best run.
+- Not building the arbiter/multi-candidate-generator layer from Murad/Forge
+  VLM as a default-on feature — its own ablation showed it hurt their best run.
   It may exist as an off-by-default toggle if time permits later, but it is
   out of scope for the baseline.
 - Not targeting the $700K grand prize (100% RHAE) or any milestone prize
@@ -110,7 +123,8 @@ ARC-AGI-3-Kaggle-Starter/       (official starter, cloned as-is)
 │   ├── perception.py           # frame -> labeled image + ASCII grid representation
 │   ├── policy.py                # prompt build, Gemma-4-31B call, JSON schema + self-repair, legal-action guard
 │   ├── memory.py                 # reflection memory, refreshed every N steps
-│   ├── heuristics.py             # numpy click-candidate scan, dead-signature tracking (no GPU)
+│   ├── heuristics.py             # numpy click-candidate scan, graded/decaying negative-affordance tracking (no GPU)
+│   ├── transitions.py            # before/after evidence ledger — baseline infra, not gated (see STRATEGY.md)
 │   ├── budget.py                  # RHAE-aware action budget / safe-mode trigger
 │   ├── model_backend.py          # ModelBackend protocol, fake + Gemma backends
 │   ├── secret_scan.py            # scans generated artifacts for leaked credentials
@@ -128,6 +142,32 @@ typed `Config` object via dependency injection. Only `config.py` reads
 env vars, at startup, and every run serializes its resolved config (with a
 hash) alongside results. This keeps the ablation ergonomics Reki used (flip a
 flag, rerun) while staying reproducible and unit-testable with fake configs.
+
+## Evidence boundary (Tycho-informed)
+
+The baseline retains the exact observation-action-observation chain even
+when memory and heuristics are off — this is infrastructure, not an
+advanced policy feature, per `STRATEGY.md`'s adoption of Tycho's evidence
+discipline. Concretely:
+
+- `transitions.py` pairs each action with the *next* frame (never inferred
+  before it exists) into a `TransitionRecord`: before/after grid hash,
+  changed-pixel count and bounding box, legal actions before/after,
+  score delta, terminal flag, and a repeated-state/no-op flag. This lives
+  outside `decide()` — the harness adapter finalizes the previous
+  transition at the top of each `choose_action` call, once the new frame
+  has arrived.
+- `heuristics.py`'s dead-signature tracking becomes **graded, not
+  boolean**: an ineffective click down-ranks a signature's score instead
+  of permanently excluding it, and a later effective use of the same
+  signature recovers some of that penalty. The transition ledger's
+  `changed_pixels`/`score_delta` is what "effective" means here — this is
+  the same before/after pairing the transition ledger already computes,
+  reused rather than duplicated.
+
+Structured belief/hypothesis tracking (confirmed/working/rejected claims)
+and executable world-model/planner/builder experiments are explicitly
+**not** part of this baseline — see `STRATEGY.md`'s experiment ladder.
 
 ## Data flow (per `choose_action` call)
 
