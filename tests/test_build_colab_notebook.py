@@ -33,6 +33,18 @@ def test_build_pins_dependency_versions():
     assert "pip install" in combined
 
 
+def test_build_does_not_pin_the_pre_gemma4_vllm_version():
+    """vllm==0.11.0 (Oct 2025) predates Gemma 4's release (2026-03-26) by
+    ~5 months and cannot parse its rope_scaling config -- real Colab run
+    (2026-08-04) hit exactly this ("rope_scaling should have a 'rope_type'
+    key"). Must never regress to actually INSTALLING that known-broken
+    pin (the version number may still appear in an explanatory comment
+    about why it's avoided -- only the quoted install-target string matters).
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert '"vllm==0.11.0"' not in combined
+
+
 def test_build_checks_out_exact_commit():
     combined = _all_cell_sources(build_colab_notebook.build())
     assert "git checkout" in combined

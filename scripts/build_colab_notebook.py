@@ -47,7 +47,12 @@ def _resolve_commit_sha() -> str:
 PINNED_INSTALL = dedent(
     """\
     !pip install -q "arc-agi>=0.9.6" python-dotenv
-    !pip install -q "vllm==0.11.0"
+    # vllm==0.11.0 (Oct 2025) predates Gemma 4's release (2026-03-26 per its
+    # Kaggle model card) by ~5 months and cannot parse its rope_scaling
+    # config (p-RoPE) -- real Colab run (2026-08-04) hit exactly this:
+    # "rope_scaling should have a 'rope_type' key". Pinned to the latest
+    # stable release as of 2026-08-04 instead.
+    !pip install -q "vllm==0.26.0"
     !pip install -q "bitsandbytes>=0.43.0"
     """
 )
