@@ -63,7 +63,19 @@ adapter needs are listed):
   (mutated) member as the action — see `agent/my_agent.py`'s original body
   (`git show HEAD~1:agent/my_agent.py` after this commit). We replicate that
   exact pattern in Task 14 rather than fighting it.
-- `.from_id(action_id)` / `.from_name(name)` — enum lookup helpers.
+- `.from_id(action_id)` / `.from_name(name)` — enum lookup helpers. **Use
+  `.from_id()`, not `GameAction(action_id)`** — the latter raises
+  `ValueError: 1 is not a valid GameAction` for every non-RESET id.
+  Verified directly against the vendored `arcengine` package (Task 14):
+  `GameAction`'s custom `__init__` reassigns `self._value_` to the plain
+  int action id, but Python's Enum machinery already built
+  `_value2member_map_` from the original `(action_id, action_type)` tuple
+  argument *before* `__init__` ran, so the map is keyed by the stale tuple
+  and value-based lookup (`GameAction(1)`) never matches, even though
+  `GameAction.ACTION1.value == 1` reads correctly afterward. `.from_id()`
+  sidesteps this because it linear-scans `.value` instead of consulting
+  that stale map. Bracket lookup by name (`GameAction["ACTION1"]`) is
+  unaffected — it uses `_member_map_`, not the value map.
 - Coordinates for `ACTION6` are validated by a pydantic `ComplexAction` model
   to `x, y` in `[0, 63]` inclusive — matches our independent
   `zerx/types.py` `Action` validation.
