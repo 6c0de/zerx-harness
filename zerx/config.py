@@ -51,6 +51,8 @@ class Config:
                 "cerebras_dev is a development-only backend and must never be "
                 "selected on platform=kaggle"
             )
+        if self.budget_soft_cap <= 0:
+            raise ValueError("budget_soft_cap must be positive")
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Config":

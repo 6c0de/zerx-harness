@@ -64,3 +64,15 @@ def test_from_env_allows_cerebras_dev_on_local_platform():
 def test_from_env_allows_gemma_kaggle_on_kaggle_platform():
     cfg = Config.from_env({"ZERX_BACKEND": "gemma_kaggle", "ZERX_PLATFORM": "kaggle"})
     assert cfg.platform == "kaggle"
+
+
+def test_rejects_non_positive_budget_soft_cap():
+    with pytest.raises(ValueError):
+        Config(budget_soft_cap=0)
+    with pytest.raises(ValueError):
+        Config(budget_soft_cap=-1)
+
+
+def test_from_env_rejects_non_positive_budget_soft_cap():
+    with pytest.raises(ValueError):
+        Config.from_env({"ZERX_BUDGET_SOFT_CAP": "0"})
