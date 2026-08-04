@@ -48,6 +48,7 @@ PINNED_INSTALL = dedent(
     """\
     !pip install -q "arc-agi>=0.9.6" python-dotenv
     !pip install -q "vllm==0.11.0"
+    !pip install -q "bitsandbytes>=0.43.0"
     """
 )
 
@@ -118,27 +119,69 @@ def build() -> dict:
             """\
             import subprocess, time
 
-            vllm_proc = subprocess.Popen([
-                "python3.12", "-m", "vllm.entrypoints.openai.api_server",
-                "--model", "google/gemma-4/Transformers/gemma-4-31b-it",
-                "--served-model-name", "gemma-4-31b-it",
-                "--port", "8000",
-                # Precision/quantization: record whatever actually loads successfully on
-                # this GPU tier (A100 preferred; L4 needs separately verified quantization
-                # per STRATEGY.md) — bf16 shown as the A100 starting point.
-                "--dtype", "bfloat16",
-            ])
+            # Precision/quantization: 31B dense in bf16/fp16 is ~2 bytes/param ~= 61GB
+            # of weights alone -- does NOT fit an A100-SXM4-40GB's 40GB VRAM (confirmed
+            # against this notebook's own env-print cell's nvidia-smi output). Load
+            # 4-bit (bitsandbytes nf4) instead: ~1/4 the weight footprint (~15GB),
+            # leaving headroom for KV cache. Record whatever precision actually loads
+            # successfully -- this is the A100 starting point, re-verify for L4 (24GB,
+            # even tighter) per STRATEGY.md.
+            VLLM_LOG_PATH = "/content/vllm_server.log"
+            vllm_log = open(VLLM_LOG_PATH, "w")
+            vllm_proc = subprocess.Popen(
+                [
+                    "python3.12", "-m", "vllm.entrypoints.openai.api_server",
+                    "--model", "google/gemma-4/Transformers/gemma-4-31b-it",
+                    "--served-model-name", "gemma-4-31b-it",
+                    "--port", "8000",
+                    "--quantization", "bitsandbytes",
+                    "--load-format", "bitsandbytes",
+                    "--dtype", "bfloat16",
+                    # Smoke test only needs a short context (64x64 grid + a short
+                    # prompt) -- capping this shrinks the KV cache's VRAM footprint.
+                    "--max-model-len", "8192",
+                    "--gpu-memory-utilization", "0.85",
+                ],
+                stdout=vllm_log,
+                stderr=subprocess.STDOUT,
+            )
+
             # Wait for the server to report ready before the smoke game below runs.
+            # A cold 31B load (first-time HF download + quantized-load + CUDA graph
+            # warmup) can take well past 5 minutes -- poll for up to 20 minutes, and
+            # print the actual server log (not just a bare timeout) if it never comes up,
+            # or if the process has already died, so the real error is visible instead
+            # of a blind "did not become ready" message.
             import urllib.request
-            for _ in range(60):
+
+            def _tail_log(n_lines: int = 60) -> str:
+                vllm_log.flush()
+                with open(VLLM_LOG_PATH) as f:
+                    lines = f.readlines()
+                return "".join(lines[-n_lines:])
+
+            ready = False
+            for i in range(240):
+                if vllm_proc.poll() is not None:
+                    print(f"vLLM server process exited early with code {vllm_proc.returncode}")
+                    print("---- last 60 lines of vllm_server.log ----")
+                    print(_tail_log())
+                    raise SystemExit("vLLM server process exited before becoming ready")
                 try:
                     urllib.request.urlopen("http://localhost:8000/v1/models", timeout=2)
+                    ready = True
                     print("vLLM server ready")
                     break
                 except Exception:
+                    if i % 12 == 0:  # every ~60s
+                        print(f"still waiting on vLLM server ({i * 5}s elapsed)...")
                     time.sleep(5)
-            else:
-                raise SystemExit("vLLM server did not become ready in time")
+            if not ready:
+                print("---- last 60 lines of vllm_server.log ----")
+                print(_tail_log())
+                raise SystemExit(
+                    f"vLLM server did not become ready in time; full log at {VLLM_LOG_PATH}"
+                )
             """
         )
     )

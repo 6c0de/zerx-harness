@@ -57,6 +57,32 @@ def test_build_wires_gemma_model_backend_against_local_vllm_server():
     assert "localhost:8000" in combined
 
 
+def test_build_quantizes_the_model_to_fit_a_40gb_gpu():
+    """31B dense in bf16/fp16 is ~2 bytes/param, ~61GB of weights alone --
+    does not fit an A100-SXM4-40GB's 40GB VRAM. Real Colab run (2026-08-04)
+    confirmed the unquantized bf16 config never brought the vLLM server up
+    within the wait window. Must load quantized (bitsandbytes) instead, and
+    the quantization package must actually be installed.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert "bitsandbytes" in combined
+    assert "--quantization" in combined
+    assert "--max-model-len" in combined
+
+
+def test_build_surfaces_real_vllm_server_log_on_startup_failure():
+    """The original cell raised a bare 'did not become ready in time'
+    SystemExit with no visibility into vLLM's actual error -- real Colab
+    run (2026-08-04) hit exactly this, with no way to diagnose the cause.
+    The server's stdout/stderr must be captured to a log file and tailed
+    into the failure output.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert "vllm_server.log" in combined
+    assert "_tail_log" in combined
+    assert "poll()" in combined  # detects the process dying early, not just a timeout
+
+
 def test_build_runs_one_public_game_via_play_local():
     combined = _all_cell_sources(build_colab_notebook.build())
     assert "play_local.py" in combined
