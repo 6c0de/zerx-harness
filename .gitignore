@@ -17,6 +17,7 @@ logs.log
 
 # Generated artefacts
 notebooks/submission.ipynb
+notebooks/colab_gemma_smoke.ipynb
 reference/
 
 # OS / editors
