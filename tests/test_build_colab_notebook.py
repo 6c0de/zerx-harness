@@ -45,6 +45,19 @@ def test_build_does_not_pin_the_pre_gemma4_vllm_version():
     assert '"vllm==0.11.0"' not in combined
 
 
+def test_build_installs_vllm_via_uv_torch_backend_auto():
+    """Plain `pip install vllm` pulls vLLM's default CUDA-12.9-compiled
+    binary regardless of the actual driver's CUDA version -- real Colab
+    run (2026-08-04, driver reporting CUDA 13.0) hit exactly this:
+    "ImportError: libcudart.so.13: cannot open shared object file". Per
+    vLLM's own install docs, `uv pip install --torch-backend=auto` detects
+    the installed driver's CUDA version and selects a matching build.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert "uv pip install" in combined
+    assert "--torch-backend=auto" in combined
+
+
 def test_build_checks_out_exact_commit():
     combined = _all_cell_sources(build_colab_notebook.build())
     assert "git checkout" in combined

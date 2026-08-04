@@ -52,7 +52,16 @@ PINNED_INSTALL = dedent(
     # config (p-RoPE) -- real Colab run (2026-08-04) hit exactly this:
     # "rope_scaling should have a 'rope_type' key". Pinned to the latest
     # stable release as of 2026-08-04 instead.
-    !pip install -q "vllm==0.26.0"
+    #
+    # Plain `pip install vllm` pulls vLLM's default CUDA-12.9-compiled
+    # binary regardless of the actual driver's CUDA version -- real Colab
+    # run (2026-08-04, driver reporting CUDA 13.0) hit exactly this
+    # mismatch: "ImportError: libcudart.so.13: cannot open shared object
+    # file". Per vLLM's own install docs (docs.vllm.ai, GPU install page),
+    # use `uv pip install --torch-backend=auto` instead, which detects the
+    # installed driver's CUDA version and selects a matching build.
+    !pip install -q uv
+    !uv pip install -q --system "vllm==0.26.0" --torch-backend=auto
     !pip install -q "bitsandbytes>=0.43.0"
     """
 )
