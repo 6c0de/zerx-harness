@@ -48,7 +48,19 @@ def test_build_prints_environment_without_secrets():
 
 def test_build_loads_exact_gemma_revision():
     combined = _all_cell_sources(build_colab_notebook.build())
-    assert "google/gemma-4/Transformers/gemma-4-31b-it" in combined
+    assert '"--model", "google/gemma-4-31B-it"' in combined
+
+
+def test_build_does_not_pass_kaggle_ui_slug_as_the_vllm_model_argument():
+    """The Kaggle Models UI labels this "google/gemma-4/Transformers/gemma-4-31b-it"
+    (owner/model/framework/variant -- Kaggle's own organizational path), but
+    that string is NOT a valid Hugging Face Hub repo id: vLLM/transformers
+    reject it outright with HFValidationError. Real Colab run (2026-08-04)
+    hit exactly this. The Kaggle label may still appear in prose/comments
+    for context, but must never be the string actually passed to --model.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert '"--model", "google/gemma-4/Transformers/gemma-4-31b-it"' not in combined
 
 
 def test_build_wires_gemma_model_backend_against_local_vllm_server():

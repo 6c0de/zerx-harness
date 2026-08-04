@@ -76,7 +76,7 @@ def build() -> dict:
         "1. Install pinned deps + vLLM\n"
         "2. Clone this repo at the exact commit and check out `zerx/`\n"
         "3. Print the resolved environment (GPU, package versions — no secrets)\n"
-        "4. Start a local vLLM server for `google/gemma-4/Transformers/gemma-4-31b-it`\n"
+        "4. Start a local vLLM server for `google/gemma-4-31B-it`\n"
         "5. Run one local public game with `GemmaModelBackend` wired in\n"
         "6. Save structured results to Google Drive (outside ephemeral runtime storage)"
     )
@@ -119,6 +119,16 @@ def build() -> dict:
             """\
             import subprocess, time
 
+            # Model identity: the Kaggle Models UI labels this
+            # "google/gemma-4/Transformers/gemma-4-31b-it" (owner/model/framework/
+            # variant -- Kaggle's own organizational path), but that string is NOT
+            # a valid Hugging Face Hub repo id and vLLM/transformers reject it
+            # outright (HFValidationError). Real Colab run (2026-08-04) hit exactly
+            # this. The actual loadable repo id, confirmed live against
+            # huggingface.co/google/gemma-4-31B-it (note capital B -- HF repo ids
+            # are case-sensitive) and its own documented `vllm serve` usage
+            # snippet, is "google/gemma-4-31B-it".
+            #
             # Precision/quantization: 31B dense in bf16/fp16 is ~2 bytes/param ~= 61GB
             # of weights alone -- does NOT fit an A100-SXM4-40GB's 40GB VRAM (confirmed
             # against this notebook's own env-print cell's nvidia-smi output). Load
@@ -131,7 +141,7 @@ def build() -> dict:
             vllm_proc = subprocess.Popen(
                 [
                     "python3.12", "-m", "vllm.entrypoints.openai.api_server",
-                    "--model", "google/gemma-4/Transformers/gemma-4-31b-it",
+                    "--model", "google/gemma-4-31B-it",
                     "--served-model-name", "gemma-4-31b-it",
                     "--port", "8000",
                     "--quantization", "bitsandbytes",
