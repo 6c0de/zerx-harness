@@ -20,6 +20,28 @@ from textwrap import dedent
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK_PATH = ROOT / "notebooks" / "colab_gemma_smoke.ipynb"
 
+
+def _git(*args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", *args], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def _resolve_repo_url() -> str:
+    try:
+        return _git("remote", "get-url", "origin")
+    except Exception:
+        return "https://github.com/YOUR_ORG/YOUR_REPO.git"  # no origin configured — fill in by hand
+
+
+def _resolve_commit_sha() -> str:
+    try:
+        return _git("rev-parse", "HEAD")
+    except Exception:
+        return "REPLACE_WITH_EXACT_COMMIT_SHA"  # not a git checkout — fill in by hand
+
 # Pinned to match this repo's local venv (docs/superpowers/experiments/baseline-000.md)
 # plus vLLM for serving the model. Bump deliberately, record the change.
 PINNED_INSTALL = dedent(
@@ -61,12 +83,13 @@ def build() -> dict:
     install_cell = code_cell(PINNED_INSTALL)
 
     checkout_cell = code_cell(
-        dedent(
-            """\
-            # Fill in the exact commit SHA you're validating (git log --oneline -1 locally).
-            REPO_URL = "https://github.com/YOUR_ORG/YOUR_REPO.git"  # replace with this repo's real remote
-            COMMIT_SHA = "REPLACE_WITH_EXACT_COMMIT_SHA"
-
+        # REPO_URL/COMMIT_SHA are resolved from this machine's actual git state
+        # at generation time (git remote get-url origin / git rev-parse HEAD) —
+        # not placeholders. Re-run this script after committing to refresh them.
+        f'REPO_URL = "{_resolve_repo_url()}"\n'
+        f'COMMIT_SHA = "{_resolve_commit_sha()}"\n'
+        + dedent(
+            """
             !git clone $REPO_URL repo
             %cd repo
             !git checkout $COMMIT_SHA
