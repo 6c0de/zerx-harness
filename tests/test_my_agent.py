@@ -87,6 +87,35 @@ def test_choose_action_survives_out_of_range_available_action_id():
     # first id that resolves via GameAction.from_id; 99 is skipped, 1 (the
     # next entry) succeeds.
     assert action is GameAction.ACTION1
+    # This IS the exception-fallback path (translation broke before decide()
+    # ever ran) — its reasoning must say so, not silently inherit whatever a
+    # prior normal decision last stamped onto this shared enum singleton.
+    assert action.reasoning == {"source": "exception_fallback"}
+
+
+def test_safe_fallback_overwrites_stale_reasoning_from_a_prior_normal_decision():
+    """`GameAction` members are process-wide singletons: `_choose_action_inner`
+    sets `.reasoning` on whichever member a normal decision returns, and
+    that attribute persists on the singleton afterward. A later
+    exception-triggered fallback that happens to return the SAME member
+    must overwrite it — otherwise a crash-recovery action gets recorded as
+    if it came from the normal decide() pipeline.
+    """
+    agent = _make_agent()
+
+    # A normal decision that stamps GameAction.ACTION1 with real telemetry.
+    GameAction.ACTION1.reasoning = {"source": "heuristic", "repaired": False}
+
+    # Now force the exception-fallback path, landing on that same member.
+    frame = FrameData(
+        frame=[[[1, 2], [3, 4]]],
+        state=GameState.NOT_FINISHED,
+        available_actions=[99, 1],
+    )
+    action = agent.choose_action([frame], frame)
+
+    assert action is GameAction.ACTION1
+    assert action.reasoning == {"source": "exception_fallback"}
 
 
 def test_choose_action_on_bare_minimal_frame_takes_normal_reset_path():

@@ -108,17 +108,26 @@ def _safe_fallback_action(latest_frame: FrameData) -> GameAction:
     `GameAction.RESET` (always constructible) if the list is empty or
     `latest_frame` itself is unusable. Wrapped in its own try/except so
     this helper itself can never raise.
+
+    `GameAction` members are process-wide singletons, so whichever member
+    this returns may still carry `.reasoning` set by an earlier, unrelated
+    normal decision (see `_choose_action_inner`) — always overwrite it here
+    so a crash-recovery action never gets recorded as if it came from the
+    normal decide() pipeline.
     """
     try:
         available = getattr(latest_frame, "available_actions", None) or []
         for action_id in available:
             try:
-                return GameAction.from_id(action_id)
+                action = GameAction.from_id(action_id)
+                action.reasoning = {"source": "exception_fallback"}
+                return action
             except Exception:
                 continue
-        return GameAction.RESET
     except Exception:
-        return GameAction.RESET
+        pass
+    GameAction.RESET.reasoning = {"source": "exception_fallback"}
+    return GameAction.RESET
 
 
 class MyAgent(Agent):

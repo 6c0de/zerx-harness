@@ -123,6 +123,35 @@ def test_secret_scan_gate_mechanism_fires_on_a_planted_fake_secret():
     assert findings_url
 
 
+def test_secret_scan_exemption_is_scoped_to_secret_scan_py_only(monkeypatch):
+    """The gate strips the two KNOWN pattern-literal strings
+    ("CEREBRAS_API_KEY", "api.cerebras.ai") from secret_scan.py's own body
+    ONLY (final whole-branch review Fix, narrowed from exempting the whole
+    file) — every OTHER bundled zerx file must still be scanned verbatim.
+    Plant a real-shaped leak in a different top-level module (budget.py)
+    and confirm build() still raises SystemExit; the exemption must not
+    accidentally widen to cover it.
+    """
+    real_budget = ROOT / "zerx" / "budget.py"
+    poisoned_text = real_budget.read_text() + '\nCEREBRAS_API_KEY = "sk-leaked-for-real"\n'
+
+    original_read_text = Path.read_text
+
+    def _patched_read_text(self, *args, **kwargs):
+        if self == real_budget:
+            return poisoned_text
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _patched_read_text)
+
+    try:
+        build_notebook.build()
+    except SystemExit as exc:
+        assert "CEREBRAS_API_KEY" in str(exc)
+    else:
+        raise AssertionError("expected build() to raise SystemExit on the planted secret")
+
+
 def test_secret_scan_gate_raises_systemexit_when_findings_present(monkeypatch):
     """Exercise build()'s actual gate call point (not just scan_for_secrets
     in isolation): monkeypatch AGENT_SRC to a planted fake secret and

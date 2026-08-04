@@ -89,19 +89,22 @@ def build() -> dict:
     # build if found"). Scan the agent body plus every bundled zerx body
     # BEFORE writing anything, so a leak never reaches notebooks/*.ipynb.
     #
-    # Exclude secret_scan.py's OWN body from the text being scanned (it is
-    # still bundled into the notebook below, like every other top-level
-    # zerx module). secret_scan.py is the detector, not leaked content, and
-    # by construction its pattern/description strings literally spell out
-    # "CEREBRAS_API_KEY" and "api.cerebras.ai" — scanning it against itself
-    # would make every build fail permanently on a self-referential false
-    # positive, not a real leak.
+    # secret_scan.py's own pattern/description strings literally spell out
+    # "CEREBRAS_API_KEY" and "api.cerebras.ai" by construction (it's the
+    # detector, not leaked content) — scanning it verbatim would make every
+    # build fail permanently on a self-referential false positive. Strip
+    # only those two known literals from ITS body before scanning, rather
+    # than exempting the whole file, so a real secret accidentally pasted
+    # anywhere else in secret_scan.py is still caught.
     sys.path.insert(0, str(ROOT))
     from zerx.secret_scan import scan_for_secrets
 
-    scan_target_bodies = [
-        body for path, body in zerx_bodies if path.name != "secret_scan.py"
-    ]
+    def _scan_text(path: Path, body: str) -> str:
+        if path.name == "secret_scan.py":
+            return body.replace("CEREBRAS_API_KEY", "").replace("api.cerebras.ai", "")
+        return body
+
+    scan_target_bodies = [_scan_text(path, body) for path, body in zerx_bodies]
     combined_source = agent_body + "\n".join(scan_target_bodies)
     findings = scan_for_secrets(combined_source)
     if findings:
