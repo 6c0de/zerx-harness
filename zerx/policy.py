@@ -178,7 +178,17 @@ def decide(
     heuristic_action: Optional[Action] = None
     if candidates and ActionName.ACTION6 in legal_actions:
         top = candidates[0]
-        if config.heuristic_first and top.score >= config.heuristic_confidence_threshold:
+        heuristic_confident = (
+            config.heuristic_first and top.score >= config.heuristic_confidence_threshold
+        )
+        # AGENTS.md step 7: apply the action-budget policy as a strategy
+        # signal. Purely additive alongside `heuristic_confident` above —
+        # when the budget is running low relative to `budget_soft_cap`, and
+        # there's an actual candidate worth executing (score > 0.0), prefer
+        # acting on it over spending a model call. Never invents a move:
+        # still gated on a real candidate that passed rank_click_candidates.
+        budget_favors_execution = budget.should_favor_execution and top.score > 0.0
+        if heuristic_confident or budget_favors_execution:
             heuristic_action = Action(name=ActionName.ACTION6, x=top.x, y=top.y)
 
     new_memory = memory

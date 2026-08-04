@@ -1,0 +1,110 @@
+"""Tests for `agent/my_agent.py`'s `MyAgent.choose_action` exception
+boundary (final whole-branch review Fix 1) and, incidentally, the decision
+telemetry now attached via `GameAction.reasoning` (Fix 3b).
+
+`agents.agent.Agent.__init__` (the real upstream base class) only stores
+its constructor args and does not touch `arc_env` during `__init__` or
+during `choose_action` (only during `take_action`, which `choose_action`
+never calls) — so a real `MyAgent` can be constructed with `arc_env=None`
+for unit testing `choose_action` directly, without a live game
+environment. This module therefore depends on the vendored
+`ARC-AGI-3-Agents` framework and the pip-installed `arcengine`, exactly
+like `agent/my_agent.py` itself already does.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+VENDOR = ROOT / "vendor" / "ARC-AGI-3-Agents"
+if str(VENDOR) not in sys.path:
+    # `agent/my_agent.py` imports `from agents.agent import Agent`; the
+    # vendored framework package only resolves once this is on sys.path
+    # (see scripts/play_local.py, which does the same thing).
+    sys.path.insert(0, str(VENDOR))
+
+from arcengine import FrameData, GameAction, GameState  # noqa: E402
+
+from agent.my_agent import MyAgent  # noqa: E402
+
+
+def _make_agent() -> MyAgent:
+    return MyAgent(
+        card_id="test-card",
+        game_id="test-game",
+        agent_name="test-agent",
+        ROOT_URL="http://example.invalid",
+        record=False,
+        arc_env=None,
+    )
+
+
+def test_choose_action_survives_shape_mismatch_between_successive_frames():
+    """TransitionLedger.finalize diffs the new frame against the previous
+    one recorded by begin(); zerx/transitions.py's `_diff` indexes
+    `after.grid[y][x]` using `before`'s dimensions, which raises
+    `IndexError` if the new frame is a different (narrower) shape. This
+    must not escape `choose_action`.
+    """
+    agent = _make_agent()
+
+    frame1 = FrameData(
+        frame=[[[0, 0], [0, 0]]],  # 2x2
+        state=GameState.NOT_FINISHED,
+        available_actions=[1, 2, 5],
+    )
+    first = agent.choose_action([frame1], frame1)
+    assert isinstance(first, GameAction)
+
+    # Narrower second frame -> before's width (2) indexes out of range
+    # against after's single-column rows -> IndexError inside finalize().
+    frame2 = FrameData(
+        frame=[[[9]]],  # 1x1
+        state=GameState.NOT_FINISHED,
+        available_actions=[1, 2, 5],
+    )
+    second = agent.choose_action([frame1, frame2], frame2)
+    assert isinstance(second, GameAction)
+
+
+def test_choose_action_survives_out_of_range_available_action_id():
+    """`available_actions` containing an id with no corresponding
+    `GameAction` (e.g. a hypothetical future game exposing id 99) makes
+    `GameAction.from_id` raise inside `_to_game_frame`. `choose_action`
+    must still return a real, legal `GameAction` (via the outer fallback,
+    since the bad id breaks translation before decide() ever runs).
+    """
+    agent = _make_agent()
+    frame = FrameData(
+        frame=[[[1, 2], [3, 4]]],
+        state=GameState.NOT_FINISHED,
+        available_actions=[99, 1, 2],
+    )
+    action = agent.choose_action([frame], frame)
+    assert isinstance(action, GameAction)
+    # The fallback linear-scans available_actions in order and returns the
+    # first id that resolves via GameAction.from_id; 99 is skipped, 1 (the
+    # next entry) succeeds.
+    assert action is GameAction.ACTION1
+
+
+def test_choose_action_on_bare_minimal_frame_takes_normal_reset_path():
+    """A default-constructed FrameData (state=NOT_PLAYED, no frame data, no
+    available_actions) does not need the exception-boundary fallback at
+    all: `_to_game_frame` maps NOT_PLAYED to `is_game_over=True`, and
+    `zerx.policy.decide()`'s terminal short-circuit returns RESET directly,
+    before finalize()'s diff or any model call. Confirm that is really the
+    path taken (not a raise recovered by the outer fallback).
+    """
+    agent = _make_agent()
+    frame = FrameData()  # state=NOT_PLAYED, frame=[], available_actions=[]
+
+    action = agent.choose_action([frame], frame)
+
+    assert action is GameAction.RESET
+    # Fix 3b: decision telemetry reaches the framework via `.reasoning`.
+    # The normal (non-exceptional) path sets it; a fallback-path action
+    # would leave it unset, so this also confirms which path was taken.
+    assert action.reasoning is not None
+    assert action.reasoning["source"] == "reset"

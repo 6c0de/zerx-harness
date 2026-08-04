@@ -13,6 +13,7 @@ Contract (enforced by the vendored `agents.agent.Agent` ABC):
 """
 from __future__ import annotations
 
+import logging
 from typing import List, Optional, Tuple
 
 # Verified against the vendored arcengine/agents packages
@@ -31,6 +32,8 @@ from zerx.perception import perceive
 from zerx.policy import Decision, decide
 from zerx.transitions import TransitionLedger
 from zerx.types import Action, ActionName, GameFrame
+
+logger = logging.getLogger(__name__)
 
 
 def _to_game_frame(frame: FrameData) -> GameFrame:
@@ -94,6 +97,30 @@ def _find_object_by_label(frame: GameFrame, label: str):
     return None
 
 
+def _safe_fallback_action(latest_frame: FrameData) -> GameAction:
+    """Last-resort action used when the normal `choose_action` path raises.
+
+    Deliberately independent of everything that might have just failed: no
+    `decide()`, no `_to_game_frame`, no other zerx module. Works only off
+    the raw upstream `latest_frame.available_actions` (a `list[int]`),
+    mapped id-by-id via `GameAction.from_id` (skipping any id that itself
+    raises), returning the first that succeeds. Falls back to
+    `GameAction.RESET` (always constructible) if the list is empty or
+    `latest_frame` itself is unusable. Wrapped in its own try/except so
+    this helper itself can never raise.
+    """
+    try:
+        available = getattr(latest_frame, "available_actions", None) or []
+        for action_id in available:
+            try:
+                return GameAction.from_id(action_id)
+            except Exception:
+                continue
+        return GameAction.RESET
+    except Exception:
+        return GameAction.RESET
+
+
 class MyAgent(Agent):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -111,7 +138,9 @@ class MyAgent(Agent):
         # retry (matches the real starter's own default behavior).
         return latest_frame.state is GameState.WIN
 
-    def choose_action(self, frames: List[FrameData], latest_frame: FrameData) -> GameAction:
+    def _choose_action_inner(
+        self, frames: List[FrameData], latest_frame: FrameData
+    ) -> GameAction:
         frame = _to_game_frame(latest_frame)
 
         # Finalize the PREVIOUS action's transition now that its result
@@ -145,4 +174,33 @@ class MyAgent(Agent):
         self._pending_decision = decision
         self._pending_before_frame = frame
 
-        return _to_game_action(decision.action)
+        upstream = _to_game_action(decision.action)
+        # AGENTS.md step 8: record the decision path, fallback/repair status,
+        # and configuration ID so it reaches the framework's recorder. The
+        # vendored `Agent.do_action_request` reads `.reasoning` straight off
+        # the GameAction enum member (see vendor/ARC-AGI-3-Agents/agents/agent.py).
+        upstream.reasoning = {
+            "source": decision.source,
+            "repaired": decision.repaired,
+            "config_hash": self._config.config_hash(),
+        }
+        return upstream
+
+    def choose_action(self, frames: List[FrameData], latest_frame: FrameData) -> GameAction:
+        """Guarantee (plan Global Constraint; AGENTS.md's control-flow and
+        testing-gate sections): this must never raise an unhandled
+        exception. `_choose_action_inner` already implements a validated
+        fallback chain internally (see zerx.policy.decide), but this outer
+        boundary catches anything unexpected — e.g. a future game handing
+        back an out-of-range action id, or an internal zerx bug — and
+        degrades to `_safe_fallback_action` instead of crashing the run.
+        """
+        try:
+            return self._choose_action_inner(frames, latest_frame)
+        except Exception as exc:  # noqa: BLE001 - intentional catch-all boundary
+            logger.error(
+                "choose_action raised %s: %s; falling back to a safe action",
+                type(exc).__name__,
+                exc,
+            )
+            return _safe_fallback_action(latest_frame)

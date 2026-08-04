@@ -235,6 +235,49 @@ def test_build_prompt_without_candidates_says_so():
     assert "no click candidates" in prompt
 
 
+def test_decide_budget_favoring_execution_triggers_heuristic_even_when_heuristic_first_off():
+    """Fix 3a (final whole-branch review): the budget signal must be able to
+    trigger heuristic use on its own, additively alongside heuristic_first,
+    not just when heuristic_first is already on. actions_taken=45 against
+    the default budget_soft_cap=50 gives ratio 0.9 >= the 0.8
+    favor_threshold, so should_favor_execution is True; a clickable object
+    gives a candidate with score > 0.0.
+    """
+    frame = _frame([[0, 0], [0, 5]])  # one clickable object -> a candidate
+    backend = FakeModelBackend(responses=[])  # would raise if called
+    decision, _ = decide(
+        frame=frame,
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(heuristic_first=False, budget_soft_cap=50),
+        backend=backend,
+        actions_taken=45,
+    )
+    assert decision.source == "heuristic"
+    assert decision.action.name == ActionName.ACTION6
+    assert backend.call_count == 0
+
+
+def test_decide_budget_favoring_execution_without_candidates_falls_through_unchanged():
+    """Negative case: same high actions_taken (budget favors execution), but
+    no clickable object -> no candidates. The new budget branch must not
+    invent a move when there is nothing sensible to execute; behavior falls
+    through to the model/fallback chain exactly as before this change.
+    """
+    decision, _ = decide(
+        frame=_blank_frame(),  # no objects -> no click candidates
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(heuristic_first=False, budget_soft_cap=50),
+        backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
+        actions_taken=45,
+    )
+    assert decision.source == "model"
+    assert decision.action.name == ActionName.ACTION1
+
+
 def test_decide_model_prompt_includes_ranked_click_candidates():
     frame = _frame([[0, 0], [0, 5]])
     backend = FakeModelBackend(responses=['{"action": "ACTION1"}'])

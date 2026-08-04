@@ -16,8 +16,10 @@ You don't normally need to call this directly — `make submit` runs it for you.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from textwrap import dedent
+from typing import List
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CHANGE THIS ONE LINE TO PICK YOUR KAGGLE ACCELERATOR
@@ -44,6 +46,22 @@ NOTEBOOK_PATH = ROOT / "notebooks" / "submission.ipynb"
 METADATA_PATH = ROOT / "notebooks" / "kernel-metadata.json"
 
 
+def zerx_bundle_files() -> List[Path]:
+    """Every top-level `zerx` module to bundle into the notebook (Task 14
+    made `agent/my_agent.py` import from `zerx.*`, but nothing ever bundled
+    the package itself — a real Kaggle run would fail with
+    `ModuleNotFoundError: No module named 'zerx'`, since internet is
+    disabled at eval time).
+
+    Enumerated programmatically — not a hand-typed list — so a future new
+    top-level zerx module is picked up automatically. Deliberately
+    non-recursive (`glob("*.py")`, not `rglob`): this must NEVER bundle
+    `zerx/backends/` (the Cerebras dev-only module) under any
+    circumstance, and a flat glob naturally excludes subdirectories.
+    """
+    return sorted((ROOT / "zerx").glob("*.py"))
+
+
 def code_cell(source: str) -> dict:
     return {
         "cell_type": "code",
@@ -63,11 +81,47 @@ def build() -> dict:
         raise SystemExit(f"Could not find {AGENT_SRC}")
     agent_body = AGENT_SRC.read_text()
 
+    zerx_paths = zerx_bundle_files()
+    zerx_bodies = [(path, path.read_text()) for path in zerx_paths]
+
+    # Build-time secret scan gate (AGENTS.md: "a packaging test
+    # (zerx/secret_scan.py) scans the generated artifact ... and fails the
+    # build if found"). Scan the agent body plus every bundled zerx body
+    # BEFORE writing anything, so a leak never reaches notebooks/*.ipynb.
+    #
+    # Exclude secret_scan.py's OWN body from the text being scanned (it is
+    # still bundled into the notebook below, like every other top-level
+    # zerx module). secret_scan.py is the detector, not leaked content, and
+    # by construction its pattern/description strings literally spell out
+    # "CEREBRAS_API_KEY" and "api.cerebras.ai" — scanning it against itself
+    # would make every build fail permanently on a self-referential false
+    # positive, not a real leak.
+    sys.path.insert(0, str(ROOT))
+    from zerx.secret_scan import scan_for_secrets
+
+    scan_target_bodies = [
+        body for path, body in zerx_bodies if path.name != "secret_scan.py"
+    ]
+    combined_source = agent_body + "\n".join(scan_target_bodies)
+    findings = scan_for_secrets(combined_source)
+    if findings:
+        raise SystemExit(f"[build_notebook] secret scan failed: {findings}")
+
     install_cell = code_cell(
         "!pip install --no-index --find-links \\\n"
         "    /kaggle/input/competitions/arc-prize-2026-arc-agi-3/arc_agi_3_wheels \\\n"
         "    arc-agi python-dotenv"
     )
+
+    # Bundle zerx/*.py (top-level modules only — never zerx/backends/, the
+    # Cerebras dev-only module) so `agent/my_agent.py`'s `from zerx.config
+    # import Config` etc. resolve on Kaggle, where internet is disabled and
+    # there is no pip rescue. Written to /tmp/zerx/, same reasoning as the
+    # agent cell below: keep it out of notebook outputs.
+    zerx_write_cells = [
+        code_cell(f"%%writefile /tmp/zerx/{path.name}\n" + body)
+        for path, body in zerx_bodies
+    ]
 
     # We write the agent to /tmp/ (not /kaggle/working/) so it does NOT appear
     # as a notebook output. Otherwise the "Submit to Competition" UI would
@@ -89,6 +143,12 @@ def build() -> dict:
             # Copy the framework into a writable location.
             !cp -r /kaggle/input/competitions/arc-prize-2026-arc-agi-3/ARC-AGI-3-Agents \\
                    /kaggle/working/ARC-AGI-3-Agents
+
+            # Copy the zerx package alongside it so `import zerx` resolves —
+            # main.py runs with cwd /kaggle/working/ARC-AGI-3-Agents, which is
+            # on sys.path via cwd.
+            !mkdir -p /kaggle/working/ARC-AGI-3-Agents && \\
+                cp -r /tmp/zerx /kaggle/working/ARC-AGI-3-Agents/zerx
 
             # Drop our agent in as a framework template.
             !cp /tmp/my_agent.py \\
@@ -189,6 +249,7 @@ def build() -> dict:
                 "`make submit`."
             ),
             install_cell,
+            *zerx_write_cells,
             write_agent_cell,
             run_cell,
             dummy_submission_cell,
