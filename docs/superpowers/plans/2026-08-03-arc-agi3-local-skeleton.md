@@ -10,7 +10,7 @@
 
 ## Strategy alignment
 
-[`STRATEGY.md`](../../../STRATEGY.md) is the prior-art and experiment guide (ReKi, Murad/Forge VLM, ProjectForty2 FORGE, Tycho). This plan implements `baseline-100-minimal` plus the transition-ledger portion of `baseline-110-evidence` — the minimum Zerx foundation, with evidence recording as baseline infrastructure (Task 13) and graded negative affordances (Task 5) since both are cheap and the modules they touch hadn't shipped yet. Structured hypothesis/belief tracking, executable world models, planners, and builder agents are later, explicitly isolated experiments (`baseline-120` onward) — not part of this plan. If a simple module this plan builds (e.g. `zerx/memory.py`'s free-text `MemoryState`) looks like it "should" be the richer Tycho-style structured version, it shouldn't be — that's deliberately deferred, see `STRATEGY.md`.
+[`STRATEGY.md`](../../../STRATEGY.md) is the prior-art and experiment guide (ReKi, Murad/Forge VLM, ProjectForty2 FORGE, Tycho, Duck). This plan implements `baseline-100-minimal` plus the transition-ledger portion of `baseline-110-evidence` — the minimum Zerx foundation, with evidence recording as baseline infrastructure (Task 13) and graded negative affordances (Task 5) since both are cheap and the modules they touch hadn't shipped yet. Task 12's `build_prompt()` also exposes ranked click candidates to the model (a small, in-scope ReKi/Duck-informed enhancement — see `STRATEGY.md` §8). Everything else — exact-state ineffective-action memory (`baseline-115`), structured hypothesis/belief tracking (`baseline-130`), phase control (`baseline-125`), Murad/Forge VLM-style candidate/arbiter ablations (`exp-140`), Duck-style tool use (`exp-150`), and Tycho's executable world model/planner/builder (`exp-200`–`exp-220`) — are later, explicitly isolated follow-on plans, not part of this one. If a simple module this plan builds (e.g. `zerx/memory.py`'s free-text `MemoryState`) looks like it "should" be a richer version, it shouldn't be yet — that's deliberately deferred, see `STRATEGY.md` §7.
 
 ## Global Constraints
 
@@ -1764,7 +1764,7 @@ git commit -m "feat(zerx): add JSON action parsing with bounded deterministic re
 
 **Interfaces:**
 - Consumes: `Config` (Task 3), `PerceptionResult`/`perceive` (Task 4), `DeadSignatureTracker`/`rank_click_candidates` (Task 5), `MemoryState`/`maybe_refresh` (Task 6), `BudgetSignal`/`evaluate_budget` (Task 7), `ModelBackend` (Task 8), `GameFrame`/`Action`/`ActionName` (Task 2), `parse_action` (Task 11, same file).
-- Produces: `Decision` (`.action: Action`, `.source: str`, `.repaired: bool`, `.budget: Optional[BudgetSignal]`, `.target_object_label: Optional[str]` — set only when the action came from a click candidate, i.e. `source in {"heuristic", "fallback_heuristic"}`; this is what Task 14's adapter feeds back into `DeadSignatureTracker.record_outcome` once the next frame shows whether the click was effective), `build_prompt(perception, memory) -> str`, `decide(frame, history, memory, dead_signatures, config, backend, actions_taken) -> Tuple[Decision, MemoryState]` — never raises, implements the control flow from `AGENTS.md`.
+- Produces: `Decision` (`.action: Action`, `.source: str`, `.repaired: bool`, `.budget: Optional[BudgetSignal]`, `.target_object_label: Optional[str]` — set only when the action came from a click candidate, i.e. `source in {"heuristic", "fallback_heuristic"}`; this is what Task 14's adapter feeds back into `DeadSignatureTracker.record_outcome` once the next frame shows whether the click was effective), `build_prompt(perception, memory, candidates=()) -> str` (includes the top 5 ranked click candidates so the model can select by label instead of guessing coordinates — `STRATEGY.md` §8), `decide(frame, history, memory, dead_signatures, config, backend, actions_taken) -> Tuple[Decision, MemoryState]` — never raises, implements the control flow from `AGENTS.md`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1772,10 +1772,11 @@ git commit -m "feat(zerx): add JSON action parsing with bounded deterministic re
 ```python
 from zerx.budget import BudgetSignal
 from zerx.config import Config
-from zerx.heuristics import DeadSignatureTracker
+from zerx.heuristics import ClickCandidate, DeadSignatureTracker
 from zerx.memory import MemoryState
 from zerx.model_backend import FakeModelBackend
-from zerx.policy import decide
+from zerx.perception import LabeledObject, PerceptionResult
+from zerx.policy import build_prompt, decide
 from zerx.types import Action, ActionName, GameFrame
 
 LEGAL = frozenset(
@@ -1987,6 +1988,38 @@ def test_decide_leaves_target_object_label_none_on_model_source():
     )
     assert decision.source == "model"
     assert decision.target_object_label is None
+
+
+def test_build_prompt_lists_ranked_click_candidates():
+    perception = PerceptionResult(
+        ascii_grid="05",
+        objects=(LabeledObject(label="obj0", color=5, cells=((1, 0),)),),
+    )
+    candidates = [ClickCandidate(x=1, y=0, object_label="obj0", score=0.5)]
+    prompt = build_prompt(perception, MemoryState(), candidates)
+    assert "obj0" in prompt
+    assert "x=1, y=0" in prompt
+
+
+def test_build_prompt_without_candidates_says_so():
+    perception = PerceptionResult(ascii_grid="0", objects=())
+    prompt = build_prompt(perception, MemoryState())
+    assert "no click candidates" in prompt
+
+
+def test_decide_model_prompt_includes_ranked_click_candidates():
+    frame = _frame([[0, 0], [0, 5]])
+    backend = FakeModelBackend(responses=['{"action": "ACTION1"}'])
+    decide(
+        frame=frame,
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(),
+        backend=backend,
+        actions_taken=0,
+    )
+    assert "obj0" in backend.last_prompt
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -2002,11 +2035,11 @@ Add these imports to the top of `zerx/policy.py` (alongside the existing `json`,
 
 ```python
 import random
-from typing import FrozenSet, Optional, Tuple
+from typing import FrozenSet, Optional, Sequence, Tuple
 
 from zerx.budget import BudgetSignal, evaluate_budget
 from zerx.config import Config
-from zerx.heuristics import DeadSignatureTracker, rank_click_candidates
+from zerx.heuristics import ClickCandidate, DeadSignatureTracker, rank_click_candidates
 from zerx.memory import MemoryState, maybe_refresh
 from zerx.model_backend import ModelBackend
 from zerx.perception import PerceptionResult, perceive
@@ -2056,7 +2089,16 @@ def _random_fallback(legal_actions: FrozenSet[ActionName], grid_size: int = 64) 
     return Action(name=name)
 
 
-def build_prompt(perception: PerceptionResult, memory: MemoryState) -> str:
+def build_prompt(
+    perception: PerceptionResult,
+    memory: MemoryState,
+    candidates: Sequence[ClickCandidate] = (),
+) -> str:
+    """STRATEGY.md §8: show the model its top ranked click candidates, not
+    just the raw object table, so it can select ACTION6 by label instead of
+    guessing coordinates — directly reduces the coordinate-hallucination
+    failure mode.
+    """
     object_lines = (
         "\n".join(
             f"- {obj.label}: color={obj.color} size={obj.size} bbox={obj.bbox}"
@@ -2064,10 +2106,19 @@ def build_prompt(perception: PerceptionResult, memory: MemoryState) -> str:
         )
         or "(no non-background objects)"
     )
+    candidate_lines = (
+        "\n".join(
+            f"- {c.object_label}: click (x={c.x}, y={c.y}), score={c.score:.2f}"
+            for c in candidates[:5]
+        )
+        or "(no click candidates)"
+    )
     return (
         "You are playing a grid-based puzzle game.\n"
         f"Grid:\n{perception.ascii_grid}\n\n"
         f"Objects:\n{object_lines}\n\n"
+        "Ranked click candidates (if you choose ACTION6, prefer one of "
+        f"these exact coordinates over guessing):\n{candidate_lines}\n\n"
         f"What you've learned so far: {memory.summary or '(nothing yet)'}\n\n"
         'Respond with exactly one JSON object: {"action": "<ACTION_NAME>", '
         '"data": {"x": <int>, "y": <int>}} (data only required for ACTION6).'
@@ -2123,7 +2174,7 @@ def decide(
         )
 
     try:
-        raw = backend.generate(build_prompt(perception, new_memory))
+        raw = backend.generate(build_prompt(perception, new_memory, candidates))
         parsed = parse_action(raw, legal_actions)
     except Exception:
         parsed = None
@@ -2171,7 +2222,7 @@ def decide(
 ```bash
 .venv/bin/pytest tests/test_policy_decide.py -v
 ```
-Expected: 12 passed.
+Expected: 15 passed.
 
 - [ ] **Step 5: Run the full local suite**
 
@@ -2771,5 +2822,5 @@ Per the spec's scope and `AGENTS.md`/`docs/TEAM_WORKFLOW.md`'s phasing, the foll
 - Making a real (non-mocked) call to the Cerebras API — Task 9's tests all inject a fake `http_post`. A live-network Cerebras smoke test (real `CEREBRAS_API_KEY`, querying the account's actual available model IDs) is opt-in and separately marked per `AGENTS.md`, not part of this plan's default suite.
 - Running `eval/run_ablation.py`'s sweeps against real games with a real model (Cerebras or Gemma).
 - Any Kaggle packaging, `make submit`, or official submission — including the Day 1 "known-working smoke submission" `docs/TEAM_WORKFLOW.md` calls for. That's a quota-consuming, hard-to-reverse action requiring explicit user approval per `AGENTS.md`'s Kaggle gate, not something this plan automates.
-- Everything in `STRATEGY.md`'s "Adopt later" section and experiment ladder past `baseline-110-evidence`: structured belief/hypothesis tracking (`baseline-120`/`baseline-130`), the executable world model, planner, and builder specialist (`exp-200`/`exp-210`/`exp-220`). Each is a separate, isolated, off-by-default follow-on plan once this one is built and green — none of it is scaffolded here, not even behind a flag.
-- Rewriting `zerx/memory.py` into Tycho-style structured fields — `STRATEGY.md` says explicitly not to do this before `baseline-100-minimal`/`baseline-110-evidence` are stable.
+- Everything in `STRATEGY.md`'s §7 experiment ladder past `baseline-110-evidence`: exact-state ineffective-action memory (`baseline-115`), reflection/click validation against real games (`baseline-120`), phase control (`baseline-125`), structured belief/hypothesis tracking (`baseline-130`), Murad/Forge VLM-style candidate/arbiter/confidence ablations (`exp-140`), Duck-style object segmentation/fixed-tools/sandboxed-Python/state-checked plans (`exp-150`), and Tycho's executable world model/planner/builder (`exp-200`/`exp-210`/`exp-220`). Each is a separate, isolated, off-by-default follow-on plan once this one is built and green — none of it is scaffolded here, not even behind a flag.
+- Rewriting `zerx/memory.py` into structured fields, or `zerx/heuristics.py`'s `DeadSignatureTracker` into exact-state suppression — `STRATEGY.md` says explicitly not to do this before `baseline-100-minimal`/`baseline-110-evidence` are stable. (The graded *structural*-signature version already shipped in Task 5 is correct as-is; `baseline-115` adds a second, narrower, exact-state layer *alongside* it, not a replacement.)

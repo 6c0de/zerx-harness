@@ -12,16 +12,16 @@ fixed bar; they will move.
 
 Primary success criterion is **score**, not architectural purity. The design
 favors reusing ideas already proven by top open community solutions (ReKi,
-Murad/Forge VLM — June 2026 milestone; Tycho — evidence-discipline ideas
-added August 2026, see below) over inventing from scratch, while keeping
-the code ours and fully ablation-instrumented so we know which piece is
-earning points.
+Murad/Forge VLM — June 2026 milestone; Duck — June 30, 2026 milestone
+winner; Tycho — evidence-discipline ideas added August 2026, see below)
+over inventing from scratch, while keeping the code ours and fully
+ablation-instrumented so we know which piece is earning points.
 
 **Prior-art naming:** "ReKi", "Murad/Forge VLM" (not just "Forge" — a
 second, unrelated system called "ProjectForty2 FORGE" also exists, see
-[`STRATEGY.md`](../../../STRATEGY.md)), "ProjectForty2 FORGE", and "Tycho"
-are the four systems this design was informed by. `STRATEGY.md` has the
-full comparison, adoption/rejection table, and experiment ladder — this
+[`STRATEGY.md`](../../../STRATEGY.md)), "ProjectForty2 FORGE", "Tycho", and
+"Duck" are the five systems this design was informed by. `STRATEGY.md` has
+the full comparison, adoption/rejection table, and experiment ladder — this
 spec doesn't repeat it.
 
 **Delivery window:** this is a 5-day build (today is Day 1, due Day 5) done
@@ -89,7 +89,11 @@ this design's `ModelBackend` protocol must accommodate.
   rejected here, see `AGENTS.md`'s hard "never, under any circumstance"
   list. Tycho (persistent evidence workspace, optional executable world
   model, exact transition verification) contributed the evidence-first
-  design below; see `STRATEGY.md` for the full analysis.
+  design below. Duck (Tufa Labs, the June 30, 2026 milestone winner —
+  ephemeral model-written Python calling the environment from inside a
+  sandbox) is excluded from this baseline's scope but informs a fully
+  specified later experiment (`exp-150-duck-tools`); see `STRATEGY.md` for
+  the full analysis of all five systems.
 
 ## Non-goals
 

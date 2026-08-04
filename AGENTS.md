@@ -33,7 +33,7 @@ conversation; if a chat conclusion matters, record it in Git as a decision,
 experiment result, or handoff note.
 
 `STRATEGY.md` records prior-art analysis (ReKi, Murad/Forge VLM,
-ProjectForty2 FORGE, Tycho), adoption decisions, trade-offs, and experiment
+ProjectForty2 FORGE, Tycho, Duck), adoption decisions, trade-offs, and experiment
 sequencing. It does not override the operating, safety, ownership,
 evaluation-integrity, or deployment rules in this file.
 
@@ -231,7 +231,7 @@ For each `choose_action(frames, latest_frame)` call:
 2. Read the current frame's available-action metadata; do not assume all games support the same actions.
 3. Produce perception data from the latest stable frame and a bounded trailing history.
 4. Generate heuristic candidates and filter dead signatures.
-5. If the configured heuristic-first policy meets a calibrated threshold, propose its action; otherwise call Gemma once.
+5. If the configured heuristic-first policy meets a calibrated threshold, propose its action; otherwise call Gemma once. When calling Gemma, show it the ranked click candidates from step 4 (label, coordinates, score) so it can select by label instead of guessing raw coordinates — see `STRATEGY.md` §8.
 6. Parse one structured action. Permit at most one bounded repair attempt. Validate action name, required data, and `ACTION6` coordinates in `[0, 63]`.
 7. Apply the action-budget policy as a strategy signal. Never invent a "safe" move that has not passed the same legality checks.
 8. Return one legal action and record the decision path, latency, fallback/repair status, memory version, and configuration ID.
@@ -264,7 +264,7 @@ At minimum record:
 - levels completed, per-level/game action counts, calculated RHAE where valid, wall time, inference latency, invalid outputs, repairs, fallbacks, resets, exceptions, and OOM/timeouts;
 - baseline delta and conclusion: keep, revert, or investigate.
 
-Do not call a feature an improvement from one run. Use repeated seeds/configurations and inspect per-game regressions. Never optimize using private evaluation information or modify competition fixtures.
+Do not call a feature an improvement from one run. Use repeated seeds/configurations and inspect per-game regressions. Never optimize using private evaluation information or modify competition fixtures. Apply `STRATEGY.md` §7.1's keep/revert/investigate rubric to every experiment record's conclusion field.
 
 ## Testing gates
 
