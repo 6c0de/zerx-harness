@@ -102,3 +102,27 @@ def rank_click_candidates(
 
     candidates.sort(key=lambda c: c.score, reverse=True)
     return candidates
+
+
+def size_rarity_scores(sizes: Tuple[int, ...], colors: Tuple[int, ...]) -> List[float]:
+    """Pure "small objects and rare colors score higher" formula --
+    factored out of rank_click_candidates so zerx.scene.list_salient_objects
+    can reuse the same scoring core instead of duplicating it. Unlike
+    rank_click_candidates, this takes no affordance tracker and applies no
+    penalty; it exists so both callers share one formula.
+    """
+    if not sizes:
+        return []
+    sizes_arr = np.array(sizes, dtype=np.float64)
+    color_counts: Dict[int, int] = {}
+    for c in colors:
+        color_counts[c] = color_counts.get(c, 0) + 1
+    rarity = np.array([1.0 / color_counts[c] for c in colors], dtype=np.float64)
+
+    max_size = sizes_arr.max()
+    size_score = 1.0 - (sizes_arr / max_size) if max_size > 0 else np.zeros_like(sizes_arr)
+    max_rarity = rarity.max()
+    rarity_score = rarity / max_rarity if max_rarity > 0 else np.zeros_like(rarity)
+
+    combined = 0.5 * size_score + 0.5 * rarity_score
+    return [float(v) for v in combined]

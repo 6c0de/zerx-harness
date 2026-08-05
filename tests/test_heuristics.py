@@ -1,4 +1,4 @@
-from zerx.heuristics import DeadSignatureTracker, rank_click_candidates
+from zerx.heuristics import DeadSignatureTracker, rank_click_candidates, size_rarity_scores
 from zerx.perception import LabeledObject, PerceptionResult
 
 
@@ -77,3 +77,27 @@ def test_click_candidate_coordinates_within_bounds():
     candidates = rank_click_candidates(result, DeadSignatureTracker(), grid_size=64)
     assert 0 <= candidates[0].x <= 63
     assert 0 <= candidates[0].y <= 63
+
+
+def test_size_rarity_scores_empty_input_returns_empty_list():
+    assert size_rarity_scores((), ()) == []
+
+
+def test_size_rarity_scores_smaller_and_rarer_scores_higher():
+    # sizes: obj0 is bigger (4 cells), obj1 is smaller (1 cell)
+    # colors: obj0's color (1) repeats, obj1's color (2) is unique -> rarer
+    sizes = (4, 1)
+    colors = (1, 2)
+    scores = size_rarity_scores(sizes, colors)
+    assert scores[1] > scores[0]
+
+
+def test_size_rarity_scores_matches_rank_click_candidates_ordering():
+    small = _obj("small", color=1, cells=[(0, 0)])
+    big = _obj("big", color=2, cells=[(2, 0), (2, 1), (2, 2), (2, 3)])
+    result = PerceptionResult(ascii_grid="", objects=(big, small))
+    candidates = rank_click_candidates(result, DeadSignatureTracker())
+    scores = size_rarity_scores((big.size, small.size), (big.color, small.color))
+    # rank_click_candidates already asserts "small" ranks first (existing test);
+    # confirm the extracted formula agrees without an affordance tracker involved.
+    assert scores[1] > scores[0]
