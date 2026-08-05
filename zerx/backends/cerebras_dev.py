@@ -18,6 +18,12 @@ from typing import Callable, Optional
 HttpPost = Callable[[str, dict, dict, float], dict]
 
 _CEREBRAS_CHAT_URL = "https://api.cerebras.ai/v1/chat/completions"
+# Confirmed live (2026-08-05): Cerebras's Cloudflare front returns HTTP 403
+# (Cloudflare error 1010, a WAF "browser signature" block) for requests
+# carrying Python urllib's default User-Agent, independent of credential or
+# model-id correctness -- the identical request succeeded once a real
+# User-Agent was set. Every request must send a non-default one.
+_USER_AGENT = "zerx-harness-cerebras-dev/1.0"
 
 
 def _default_http_post(url: str, headers: dict, json_body: dict, timeout: float) -> dict:
@@ -60,6 +66,7 @@ class CerebrasDevBackend:
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
+            "User-Agent": _USER_AGENT,
         }
         json_body = {
             "model": self.model_id,
