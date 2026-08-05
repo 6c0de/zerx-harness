@@ -342,6 +342,8 @@ Both fallback-loop characterization tests (`test_ls20_fallback_loop_is_fully_exp
 
 **Full-suite trade-off, as `person-3-local-regression.md` anticipated:** `pytest tests/ -q` with no `-m` filter now takes on the order of 20+ minutes (the 261 pre-existing tests run in ~110s; this file's 27 tests add the ~20-minute live-engine cost) — too slow for routine iteration. Recommend `pytest tests/ -q -m "not slow_local_engine"` (or `--ignore=tests/test_real_game_regression.py` to also skip the two fast characterization tests) as the fast, every-commit command, and reserve the unfiltered run for pre-push/pre-merge verification, matching this repo's existing `cerebras_live` precedent.
 
+**Final combined verification, run once before pushing:** `.venv/Scripts/pytest.exe tests/ -q` (no `-m` filter, all files together) → **288 passed, 0 failed, 0 skipped, 1401.61s (23m 21s)**. 261 (pre-existing) + 27 (this track's new tests: 25 sweep + 2 characterization) = 288, exactly as predicted from the separate runs above — no cross-file interaction issues. `g50t`/`m0r0` did not skip this time, consistent with the "transient API condition, not a permanent per-game gap" read above.
+
 ---
 
 ## Self-review notes
