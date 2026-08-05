@@ -139,7 +139,7 @@ person, under `docs/superpowers/plans/parallel-day3/`:
 | 1 | `baseline-115-exact-state-memory` | `feat/baseline-115-exact-state-memory` | `docs/superpowers/plans/parallel-day3/person-1-baseline-115.md` |
 | 2 | `baseline-130-hypothesis` (structured memory) | `feat/baseline-130-hypothesis-memory` | `docs/superpowers/plans/parallel-day3/person-2-baseline-130.md` |
 | 3 | `exp-140-vlm-refinement` (candidate/arbiter infra, off by default) | `feat/exp-140-vlm-refinement` | `docs/superpowers/plans/parallel-day3/person-3-exp-140.md` |
-| 4 | `exp-150-duck-tools` Variants A+B (segmentation + fixed analysis tools) | `feat/exp-150-duck-tools-ab` | `docs/superpowers/plans/parallel-day3/person-4-exp-150.md` |
+| 4 | `exp-150-duck-tools` Variants A+B — **done**, 175/175 passing, `duck_objects_on=False` by default, unwired (see `docs/superpowers/plans/2026-08-05-exp-150-duck-tools-ab.md`) | `feat/exp-150-duck-tools-ab` | `docs/superpowers/plans/parallel-day3/person-4-exp-150.md` |
 
 Chosen specifically because none of the four depends on another landing
 first (unlike `baseline-125`, which needs `baseline-130` done, or
