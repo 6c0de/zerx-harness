@@ -137,3 +137,38 @@ def test_choose_action_on_bare_minimal_frame_takes_normal_reset_path():
     # would leave it unset, so this also confirms which path was taken.
     assert action.reasoning is not None
     assert action.reasoning["source"] == "reset"
+
+
+def test_structured_memory_off_by_default_is_a_true_no_op():
+    """With no env vars set (structured_memory_on defaults False), the
+    structured memory attribute must never advance across several
+    choose_action calls -- confirms the flag is a real no-op, not just an
+    unused field.
+    """
+    agent = _make_agent()
+    assert agent._structured_memory.step_count == 0
+
+    frame = FrameData(
+        frame=[[[1, 2], [3, 4]]],
+        state=GameState.NOT_FINISHED,
+        available_actions=[1, 2, 5],
+    )
+    agent.choose_action([frame], frame)
+    agent.choose_action([frame], frame)
+
+    assert agent._structured_memory.step_count == 0
+
+
+def test_structured_memory_on_advances_step_count(monkeypatch):
+    monkeypatch.setenv("ZERX_STRUCTURED_MEMORY_ON", "true")
+    agent = _make_agent()
+    assert agent._structured_memory.step_count == 0
+
+    frame = FrameData(
+        frame=[[[1, 2], [3, 4]]],
+        state=GameState.NOT_FINISHED,
+        available_actions=[1, 2, 5],
+    )
+    agent.choose_action([frame], frame)
+
+    assert agent._structured_memory.step_count == 1

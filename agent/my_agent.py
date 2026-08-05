@@ -26,7 +26,7 @@ from agents.agent import Agent
 
 from zerx.config import Config
 from zerx.heuristics import DeadSignatureTracker
-from zerx.memory import MemoryState
+from zerx.memory import MemoryState, StructuredMemoryState, maybe_refresh_structured
 from zerx.model_backend import GemmaModelBackend
 from zerx.perception import perceive
 from zerx.policy import Decision, decide
@@ -141,6 +141,9 @@ class MyAgent(Agent):
         self._actions_taken = 0
         self._pending_decision: Optional[Decision] = None
         self._pending_before_frame: Optional[GameFrame] = None
+        # --- baseline-130-hypothesis (feat/baseline-130-hypothesis-memory) ---
+        self._structured_memory = StructuredMemoryState()
+        # --- end baseline-130-hypothesis ---
 
     def is_done(self, frames: List[FrameData], latest_frame: FrameData) -> bool:
         # Stop once we win. Don't stop on GAME_OVER — we want to RESET and
@@ -178,6 +181,16 @@ class MyAgent(Agent):
             actions_taken=self._actions_taken,
         )
         self._actions_taken += 1
+
+        # --- baseline-130-hypothesis (feat/baseline-130-hypothesis-memory) ---
+        if self._config.structured_memory_on:
+            self._structured_memory = maybe_refresh_structured(
+                self._structured_memory,
+                recent_context=perceive(frame).ascii_grid,
+                summarizer=lambda prev, ctx: prev,
+                refresh_interval=self._config.memory_refresh_interval,
+            )
+        # --- end baseline-130-hypothesis ---
 
         self._transitions.begin(frame, decision.action)
         self._pending_decision = decision
