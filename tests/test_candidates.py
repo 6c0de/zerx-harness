@@ -35,3 +35,34 @@ def test_candidate_is_a_frozen_dataclass_with_expected_fields():
     assert c.raw_response == "raw"
     assert c.parsed is parsed
     assert c.static_score == 1.0
+
+
+from zerx.candidates import generate_candidates
+from zerx.model_backend import FakeModelBackend
+
+LEGAL = frozenset({ActionName.RESET, ActionName.ACTION1, ActionName.ACTION5, ActionName.ACTION6})
+
+
+def test_generate_candidates_calls_backend_exactly_count_times():
+    backend = FakeModelBackend(responses=['{"action": "ACTION1"}'] * 3)
+    candidates = generate_candidates(backend, "prompt", LEGAL, count=3)
+    assert backend.call_count == 3
+    assert len(candidates) == 3
+
+
+def test_generate_candidates_records_parse_failure_without_crashing():
+    backend = FakeModelBackend(
+        responses=['{"action": "ACTION1"}', "garbage", '{"action": "ACTION5"}']
+    )
+    candidates = generate_candidates(backend, "prompt", LEGAL, count=3)
+    assert candidates[0].parsed is not None
+    assert candidates[1].parsed is None
+    assert candidates[1].static_score == 0.0
+    assert candidates[2].parsed is not None
+
+
+def test_generate_candidates_stores_raw_response_and_score():
+    backend = FakeModelBackend(responses=['{"action": "ACTION1"}'])
+    candidates = generate_candidates(backend, "prompt", LEGAL, count=1)
+    assert candidates[0].raw_response == '{"action": "ACTION1"}'
+    assert candidates[0].static_score == 1.0

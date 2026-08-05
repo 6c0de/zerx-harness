@@ -38,3 +38,32 @@ def static_candidate_score(candidate_raw: str, parsed: Optional[ParsedAction]) -
     if parsed.action.name == ActionName.RESET:
         score -= 0.5
     return max(0.0, score)
+
+
+def generate_candidates(
+    backend: ModelBackend,
+    prompt: str,
+    legal_actions: FrozenSet[ActionName],
+    count: int,
+) -> List[Candidate]:
+    """Calls backend.generate(prompt) `count` times, parses each response,
+    scores each deterministically. Never calls an arbiter -- that's a
+    separate, explicitly optional step (see select_candidate()). A
+    response that fails to parse gets parsed=None and a 0.0 score but does
+    not stop generation of the remaining candidates.
+    """
+    candidates: List[Candidate] = []
+    for _ in range(count):
+        raw = backend.generate(prompt)
+        try:
+            parsed = parse_action(raw, legal_actions)
+        except Exception:
+            parsed = None
+        candidates.append(
+            Candidate(
+                raw_response=raw,
+                parsed=parsed,
+                static_score=static_candidate_score(raw, parsed),
+            )
+        )
+    return candidates
