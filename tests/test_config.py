@@ -136,3 +136,12 @@ def test_from_env_missing_structured_memory_on_uses_default():
 def test_from_env_enables_structured_memory_on():
     cfg = Config.from_env({"ZERX_STRUCTURED_MEMORY_ON": "true"})
     assert cfg.structured_memory_on is True
+
+
+def test_gemma_base_url_defaults_to_local_vllm_endpoint():
+    assert Config().gemma_base_url == "http://localhost:8000/v1/chat/completions"
+
+
+def test_from_env_overrides_gemma_base_url():
+    cfg = Config.from_env({"ZERX_GEMMA_BASE_URL": "http://localhost:9000/v1/chat/completions"})
+    assert cfg.gemma_base_url == "http://localhost:9000/v1/chat/completions"

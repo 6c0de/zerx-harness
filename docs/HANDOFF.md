@@ -130,11 +130,14 @@ parallel tracks below (none of them touch Kaggle).
 
 ## Known failures or risks (carried over, still real)
 
-1. `zerx/backends/cerebras_dev.py`'s `platform` kwarg defaults to `"local"`
-   and is never wired to the real `Config.platform` — inert today (nothing
-   constructs `CerebrasDevBackend` outside its own tests). **Whichever
-   track adds a backend-selection factory must forward
-   `platform=config.platform` explicitly.**
+1. ~~`zerx/backends/cerebras_dev.py`'s `platform` kwarg defaults to
+   `"local"` and is never wired to the real `Config.platform`~~ **Fixed**
+   on `feat/baseline-120-backend-wiring` — `zerx/model_backend.py`'s new
+   `select_backend(config)` factory constructs the backend named by
+   `config.backend` and forwards `config.platform` to `CerebrasDevBackend`
+   explicitly; `agent/my_agent.py`'s `MyAgent.__init__` now calls it
+   instead of hardcoding `GemmaModelBackend`. See
+   `docs/superpowers/plans/2026-08-05-baseline-120-backend-wiring.md`.
 2. No true rate-limit backoff in `CerebrasDevBackend.generate()`'s retry
    loop — inert until a live Cerebras test exists.
 3. `parse_action(None, ...)` raises `AttributeError`, inert because
@@ -216,8 +219,8 @@ Four tracks validating `baseline-120-reki-core` against real games, per
 `docs/superpowers/plans/parallel-baseline-120/README.md` (added on
 `master` at `220b58e`, one commit ahead of this track's fork point
 `8a8a01ad155227aee6f00a5844d1e1bd9da5f4cb`). Each track appends its own
-status line here — this entry covers Track 3 only; see the other 3
-tracks' own sessions for their status.
+status line here — the integration owner does the final consolidated
+rewrite once all 4 are merged (see below).
 
 **Track 3 — local regression & fallback-loop investigation** (2026-08-05):
 done. Branch `feat/baseline-120-local-regression`, commit `8a8a01ad` base.
@@ -242,6 +245,15 @@ session's reproduction of the original `ls20`+`vc33` finding only ever
 completed `vc33` — full writeup:
 `docs/superpowers/plans/2026-08-05-baseline-120-local-regression.md`.
 Full local suite: 288 passed (261 pre-existing + 27 new), 0 failed.
+
+**Track 1 (backend selection wiring) — done.** Branch
+`feat/baseline-120-backend-wiring`, commit `dd74268` (plus a pending
+docs commit updating this file). `select_backend(config: Config) ->
+ModelBackend` added to `zerx/model_backend.py`, matching the frozen
+interface in `docs/superpowers/plans/parallel-baseline-120/README.md`
+exactly. Full suite: 270 passed, 0 failed (261 base + 9 new: 2 config, 7
+backend selection). See
+`docs/superpowers/plans/2026-08-05-baseline-120-backend-wiring.md`.
 
 ## Uncommitted or external artifacts
 
