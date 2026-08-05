@@ -78,6 +78,20 @@ PINNED_INSTALL = dedent(
     """
 )
 
+# baseline-120-reki-core's real-game validation sample (see
+# docs/superpowers/plans/parallel-baseline-120/README.md's "concrete,
+# empirical finding" and docs/superpowers/experiments/baseline-120.md for
+# the full game-list/wall-clock justification). Keeps the existing
+# ls20+vc33 precedent (baseline-100's smoke game plus this plan's own
+# measured "before" reference) and adds 6 more games spread across the
+# documented 25-game public list, for per-game regression coverage per
+# AGENTS.md's "repeated seeds/configurations" language.
+GAME_SAMPLE = ["ls20", "vc33", "su15", "tn36", "ka59", "lf52", "tr87", "sc25"]
+# Deliberately below play_local.py's 200-step default: 8 games x 200 steps
+# risked exceeding a single Colab session at an unmeasured 31B
+# per-decision latency -- see the experiment doc's wall-clock trade-off.
+MAX_STEPS_PER_GAME = 100
+
 
 def code_cell(source: str) -> dict:
     return {
@@ -95,16 +109,23 @@ def markdown_cell(source: str) -> dict:
 
 def build() -> dict:
     intro_cell = markdown_cell(
-        "# Day 2 — Colab Gemma-4-31B smoke test\n\n"
-        "Development notebook, not the Kaggle submission (see "
-        "`scripts/build_notebook.py` for that). Attach an A100 or L4 GPU "
-        "runtime before running (Runtime > Change runtime type).\n\n"
+        "# baseline-120 — Colab Gemma-4-31B real-game validation\n\n"
+        "Extends Day 2's one-game smoke test "
+        "(`docs/superpowers/experiments/baseline-100.md`) into a real, "
+        "scored `baseline-120-reki-core` validation run across a "
+        "documented multi-game sample. Development notebook, not the "
+        "Kaggle submission (see `scripts/build_notebook.py` for that). "
+        "Attach an A100 or L4 GPU runtime before running (Runtime > Change "
+        "runtime type).\n\n"
         "1. Install pinned deps + vLLM\n"
         "2. Clone this repo at the exact commit and check out `zerx/`\n"
         "3. Print the resolved environment (GPU, package versions — no secrets)\n"
         "4. Start a local vLLM server for `google/gemma-4-31B-it`\n"
-        "5. Run one local public game with `GemmaModelBackend` wired in\n"
-        "6. Save structured results to Google Drive (outside ephemeral runtime storage)"
+        "5. Play each game in `GAME_SAMPLE` directly via `MyAgent`, capped at "
+        "`MAX_STEPS_PER_GAME` actions each\n"
+        "6. Save each game's real outcome (state, levels completed, actions) "
+        "plus its RHAE from `arc.get_scorecard()` to Google Drive (outside "
+        "ephemeral runtime storage)"
     )
 
     install_cell = code_cell(PINNED_INSTALL)
@@ -235,17 +256,91 @@ def build() -> dict:
     )
 
     smoke_game_cell = code_cell(
-        dedent(
-            """\
+        f'GAME_SAMPLE = {json.dumps(GAME_SAMPLE)}\n'
+        f'MAX_STEPS_PER_GAME = {MAX_STEPS_PER_GAME}\n'
+        + dedent(
+            """
             import os
+            import sys
+            import time
+            import importlib.util
+
             os.environ["ZERX_BACKEND"] = "gemma_local"
             os.environ["ZERX_PLATFORM"] = "colab"
             os.environ["ZERX_MODEL_REVISION"] = "gemma-4-31b-it"
 
-            # play_local.py loads agent/my_agent.py, which constructs
-            # GemmaModelBackend(self._config.model_revision) — pointed at the vLLM
-            # server just started above via the default base_url (localhost:8000).
-            !python3.12 scripts/play_local.py --game ls20 --max-steps 50
+            sys.path.insert(0, "")
+            sys.path.insert(0, "vendor/ARC-AGI-3-Agents")
+
+            import arc_agi
+            from arc_agi import OperationMode
+
+            def _load_my_agent_class():
+                spec = importlib.util.spec_from_file_location(
+                    "user_agent_module", "agent/my_agent.py"
+                )
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                return module.MyAgent
+
+            # Loading agent/my_agent.py here constructs its backend via
+            # ZERX_BACKEND=gemma_local -- once Track 1's select_backend
+            # lands this resolves through it to
+            # GemmaModelBackend(self._config.model_revision), pointed at
+            # the vLLM server started above via its default base_url
+            # (localhost:8000). Before Track 1 lands, agent/my_agent.py's
+            # __init__ hardcodes GemmaModelBackend directly regardless of
+            # Config.backend -- gemma_local already resolves correctly
+            # either way (see docs/superpowers/plans/parallel-baseline-120/
+            # README.md's "concrete, empirical finding").
+            MyAgentCls = _load_my_agent_class()
+            MyAgentCls.MAX_ACTIONS = min(
+                getattr(MyAgentCls, "MAX_ACTIONS", MAX_STEPS_PER_GAME),
+                MAX_STEPS_PER_GAME,
+            )
+
+            arc = arc_agi.Arcade(operation_mode=OperationMode.NORMAL)
+
+            per_game_play_results = []
+            for i, game_id in enumerate(GAME_SAMPLE, 1):
+                print(f"=== [{i}/{len(GAME_SAMPLE)}] {game_id} ===")
+                start = time.monotonic()
+                try:
+                    env = arc.make(game_id)
+                    agent = MyAgentCls(
+                        card_id="colab-baseline-120",
+                        game_id=game_id,
+                        agent_name=f"MyAgent.colab.{game_id}",
+                        ROOT_URL="http://localhost",
+                        record=False,
+                        arc_env=env,
+                        tags=["colab", "baseline-120"],
+                    )
+                    agent.main()
+                    final = agent.frames[-1]
+                    per_game_play_results.append({
+                        "game_id": game_id,
+                        "state": str(final.state),
+                        "levels_completed": final.levels_completed,
+                        "actions": agent.action_counter,
+                        "wall_time_seconds": time.monotonic() - start,
+                        "exception": None,
+                    })
+                    print(
+                        f"  -> state={final.state}, "
+                        f"levels_completed={final.levels_completed}, "
+                        f"actions={agent.action_counter}"
+                    )
+                except Exception as exc:  # noqa: BLE001 - one bad game must not lose the rest
+                    per_game_play_results.append({
+                        "game_id": game_id,
+                        "state": None,
+                        "levels_completed": None,
+                        "actions": None,
+                        "wall_time_seconds": time.monotonic() - start,
+                        "exception": repr(exc),
+                    })
+                    print(f"  -> EXCEPTION: {exc!r}")
             """
         )
     )
@@ -253,13 +348,31 @@ def build() -> dict:
     save_results_cell = code_cell(
         dedent(
             """\
-            import json, subprocess
+            import json
+            import subprocess
             from google.colab import drive
 
             drive.mount("/content/drive")
 
+            scorecard = arc.get_scorecard()
+
+            def _rhae_for(game_id):
+                env_score_list = scorecard.find_environment(game_id)
+                if env_score_list is None or not env_score_list.runs:
+                    return None, "no EnvironmentScoreList found for this game_id"
+                latest_run = env_score_list.runs[-1]
+                return latest_run.score, latest_run.message
+
+            per_game_full = []
+            for entry in per_game_play_results:
+                if entry["exception"] is not None:
+                    rhae, rhae_message = None, "game raised an exception before scoring"
+                else:
+                    rhae, rhae_message = _rhae_for(entry["game_id"])
+                per_game_full.append({**entry, "rhae": rhae, "rhae_message": rhae_message})
+
             result = {
-                "experiment_id": "baseline-100",
+                "experiment_id": "baseline-120",
                 "model_revision": "gemma-4-31b-it",
                 "base_commit": subprocess.run(
                     ["git", "rev-parse", "HEAD"], capture_output=True, text=True
@@ -269,9 +382,12 @@ def build() -> dict:
                     capture_output=True, text=True,
                 ).stdout.strip(),
                 "dtype": "bfloat16",
-                "game_id": "ls20",
+                "game_sample": GAME_SAMPLE,
+                "max_steps_per_game": MAX_STEPS_PER_GAME,
+                "per_game": per_game_full,
+                "aggregate_score": scorecard.score,
             }
-            out_path = "/content/drive/MyDrive/zerx-baseline-100-result.json"
+            out_path = "/content/drive/MyDrive/zerx-baseline-120-result.json"
             with open(out_path, "w") as f:
                 json.dump(result, f, indent=2)
             print("Saved:", out_path)
