@@ -224,11 +224,18 @@ backend selection). See
 `docs/superpowers/plans/2026-08-05-baseline-120-backend-wiring.md`.
 
 - Track 4 (`feat/baseline-120-colab-validation`, Colab validation): Part A
-  complete (multi-game notebook + real per-game RHAE capture, full local
-  suite green at 268 tests) — commit
-  `48bfcc8b352595393c6de01f042572cc42880a99`. Part B was initially blocked
-  on Track 1's `select_backend` not being reachable yet; now merging
-  Track 1's branch in to unblock it (see below for the post-merge result).
+  complete (multi-game notebook + real per-game RHAE capture) — commit
+  `48bfcc8b352595393c6de01f042572cc42880a99`. Merged Track 1
+  (`origin/feat/baseline-120-backend-wiring`) in at commit `98e6e73`
+  (one mechanical conflict in this file, resolved by keeping both
+  sides); confirmed `select_backend` imports and `gemma_local` resolves
+  with no behavior change. Full suite post-merge: **277 passed, 0
+  failed**. Part B is now blocked on exactly one thing: no
+  `CEREBRAS_API_KEY` in this environment (Track 1's own blocker is fully
+  resolved). The actual Colab GPU run still needs a human to execute the
+  regenerated notebook. See
+  `docs/superpowers/experiments/baseline-120.md` for full detail — still
+  `investigate`, not `keep`/`revert`.
 
 ## Uncommitted or external artifacts
 
