@@ -91,3 +91,13 @@ def test_from_env_overrides_exact_state_suppression_on():
 def test_from_env_missing_exact_state_suppression_keeps_default():
     cfg = Config.from_env({})
     assert cfg.exact_state_suppression_on is False
+
+
+def test_duck_objects_on_defaults_false():
+    config = Config()
+    assert config.duck_objects_on is False
+
+
+def test_duck_objects_on_from_env():
+    config = Config.from_env({"ZERX_DUCK_OBJECTS_ON": "true"})
+    assert config.duck_objects_on is True

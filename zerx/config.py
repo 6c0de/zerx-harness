@@ -45,6 +45,7 @@ class Config:
     backend: str = "fake"  # "fake" | "cerebras_dev" | "gemma_local" | "gemma_kaggle"
     platform: str = "local"  # "local" | "colab" | "kaggle"
     exact_state_suppression_on: bool = False
+    duck_objects_on: bool = False  # exp-150-duck-tools Variants A+B (zerx/scene.py) — off by default
 
     def __post_init__(self) -> None:
         if self.backend == "cerebras_dev" and self.platform == "kaggle":
@@ -78,6 +79,7 @@ class Config:
             exact_state_suppression_on=_env_bool(
                 env, "ZERX_EXACT_STATE_SUPPRESSION_ON", cls.exact_state_suppression_on
             ),
+            duck_objects_on=_env_bool(env, "ZERX_DUCK_OBJECTS_ON", cls.duck_objects_on),
         )
 
     def to_json(self) -> str:
