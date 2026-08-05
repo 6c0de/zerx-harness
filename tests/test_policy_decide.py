@@ -291,3 +291,81 @@ def test_decide_model_prompt_includes_ranked_click_candidates():
         actions_taken=0,
     )
     assert "obj0" in backend.last_prompt
+
+
+def test_decide_multi_candidate_calls_backend_candidate_count_times():
+    backend = FakeModelBackend(responses=['{"action": "ACTION1"}'] * 3)
+    decide(
+        frame=_blank_frame(),
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(candidate_count=3),
+        backend=backend,
+        actions_taken=0,
+    )
+    assert backend.call_count == 3
+
+
+def test_decide_multi_candidate_uses_model_source_when_a_candidate_parses():
+    decision, _ = decide(
+        frame=_blank_frame(),
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(candidate_count=2),
+        backend=FakeModelBackend(
+            responses=['{"action": "ACTION5"}', '{"action": "ACTION1"}']
+        ),
+        actions_taken=0,
+    )
+    assert decision.source == "model"
+    assert decision.action.name in (ActionName.ACTION1, ActionName.ACTION5)
+
+
+def test_decide_multi_candidate_falls_back_when_all_candidates_unparseable():
+    decision, _ = decide(
+        frame=_blank_frame(),
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(candidate_count=2),
+        backend=FakeModelBackend(responses=["garbage", "also garbage"]),
+        actions_taken=0,
+    )
+    assert decision.source == "fallback_deterministic"
+
+
+def test_decide_multi_candidate_prefers_higher_scored_non_reset_candidate():
+    legal = frozenset({ActionName.RESET, ActionName.ACTION1, ActionName.ACTION5})
+    decision, _ = decide(
+        frame=_frame([[0, 0], [0, 0]], legal=legal),
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(candidate_count=2),
+        backend=FakeModelBackend(
+            responses=['{"action": "RESET"}', '{"action": "ACTION1"}']
+        ),
+        actions_taken=0,
+    )
+    assert decision.action.name == ActionName.ACTION1
+
+
+def test_decide_default_candidate_count_still_calls_backend_exactly_once():
+    """Regression guard: candidate_count's default (1) must take the
+    original, untouched single-call path -- every other test in this file
+    already exercises Config() with no candidate_count override, so this
+    just makes the call-count invariant explicit.
+    """
+    backend = FakeModelBackend(responses=['{"action": "ACTION1"}'])
+    decide(
+        frame=_blank_frame(),
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(),
+        backend=backend,
+        actions_taken=0,
+    )
+    assert backend.call_count == 1
