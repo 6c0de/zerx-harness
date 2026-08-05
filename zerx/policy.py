@@ -211,11 +211,24 @@ def decide(
             new_memory,
         )
 
-    try:
-        raw = backend.generate(build_prompt(perception, new_memory, candidates))
-        parsed = parse_action(raw, legal_actions)
-    except Exception:
-        parsed = None
+    if config.candidate_count > 1:
+        try:
+            from zerx.candidates import generate_candidates, select_candidate
+
+            prompt = build_prompt(perception, new_memory, candidates)
+            model_candidates = generate_candidates(
+                backend, prompt, legal_actions, config.candidate_count
+            )
+            best = select_candidate(model_candidates, config)
+            parsed = best.parsed if best is not None else None
+        except Exception:
+            parsed = None
+    else:
+        try:
+            raw = backend.generate(build_prompt(perception, new_memory, candidates))
+            parsed = parse_action(raw, legal_actions)
+        except Exception:
+            parsed = None
 
     if parsed is not None:
         return (

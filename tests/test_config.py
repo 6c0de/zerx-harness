@@ -101,3 +101,24 @@ def test_duck_objects_on_defaults_false():
 def test_duck_objects_on_from_env():
     config = Config.from_env({"ZERX_DUCK_OBJECTS_ON": "true"})
     assert config.duck_objects_on is True
+
+
+def test_default_candidate_count_is_one():
+    assert Config().candidate_count == 1
+
+
+def test_from_env_overrides_candidate_count():
+    cfg = Config.from_env({"ZERX_CANDIDATE_COUNT": "3"})
+    assert cfg.candidate_count == 3
+
+
+def test_rejects_non_positive_candidate_count():
+    with pytest.raises(ValueError):
+        Config(candidate_count=0)
+    with pytest.raises(ValueError):
+        Config(candidate_count=-1)
+
+
+def test_from_env_rejects_non_positive_candidate_count():
+    with pytest.raises(ValueError):
+        Config.from_env({"ZERX_CANDIDATE_COUNT": "0"})

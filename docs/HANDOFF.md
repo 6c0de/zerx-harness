@@ -141,6 +141,13 @@ person, under `docs/superpowers/plans/parallel-day3/`:
 | 3 | `exp-140-vlm-refinement` (candidate/arbiter infra, off by default) | `feat/exp-140-vlm-refinement` | `docs/superpowers/plans/parallel-day3/person-3-exp-140.md` |
 | 4 | `exp-150-duck-tools` Variants A+B — **done**, including a final whole-branch-review fix wave (correspondence-confidence gating, `compare_frames` shape detection, HUD both-endpoint check, O(n) containment search), 180/180 passing, `duck_objects_on=False` by default, unwired (see `docs/superpowers/plans/2026-08-05-exp-150-duck-tools-ab.md`) | `feat/exp-150-duck-tools-ab` | `docs/superpowers/plans/parallel-day3/person-4-exp-150.md` |
 
+Track 3 status (2026-08-05): done. `zerx/candidates.py` (Candidate,
+static_candidate_score, generate_candidates, select_best_candidate,
+select_candidate w/ off-by-default arbiter hook) + `Config.candidate_count`
+(default 1) + a new `decide()` branch gated on `candidate_count > 1`. Full
+suite green, default behavior unchanged. See
+`docs/superpowers/plans/2026-08-05-exp-140-vlm-refinement.md`.
+
 Chosen specifically because none of the four depends on another landing
 first (unlike `baseline-125`, which needs `baseline-130` done, or
 `exp-200`+, which needs `baseline-130` done) — see `STRATEGY.md` §7's

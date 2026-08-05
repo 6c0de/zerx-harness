@@ -46,6 +46,7 @@ class Config:
     platform: str = "local"  # "local" | "colab" | "kaggle"
     exact_state_suppression_on: bool = False
     duck_objects_on: bool = False  # exp-150-duck-tools Variants A+B (zerx/scene.py) — off by default
+    candidate_count: int = 1
 
     def __post_init__(self) -> None:
         if self.backend == "cerebras_dev" and self.platform == "kaggle":
@@ -55,6 +56,8 @@ class Config:
             )
         if self.budget_soft_cap <= 0:
             raise ValueError("budget_soft_cap must be positive")
+        if self.candidate_count < 1:
+            raise ValueError("candidate_count must be >= 1")
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Config":
@@ -80,6 +83,7 @@ class Config:
                 env, "ZERX_EXACT_STATE_SUPPRESSION_ON", cls.exact_state_suppression_on
             ),
             duck_objects_on=_env_bool(env, "ZERX_DUCK_OBJECTS_ON", cls.duck_objects_on),
+            candidate_count=_env_int(env, "ZERX_CANDIDATE_COUNT", cls.candidate_count),
         )
 
     def to_json(self) -> str:
