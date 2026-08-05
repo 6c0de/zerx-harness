@@ -258,3 +258,65 @@ def test_inspect_local_crop_does_not_return_the_full_grid():
     text = inspect_local_crop(_frame(grid), (0, 0, 2, 2))
     assert len(text.splitlines()) == 3
     assert all(len(row) == 3 for row in text.splitlines())
+
+
+def test_compare_frames_reports_shape_change_not_no_change():
+    # a same-color, same-centroid transformation (plus -> filled square)
+    # must be visible to compare_frames, not silently reported as no_change --
+    # compare_frames previously had no shape/area term, only color and centroid.
+    before = perceive_scene(_frame([
+        [0, 0, 0, 0, 0],
+        [0, 0, 5, 0, 0],
+        [0, 5, 5, 5, 0],
+        [0, 0, 5, 0, 0],
+        [0, 0, 0, 0, 0],
+    ]))
+    after = perceive_scene(_frame([
+        [0, 0, 0, 0, 0],
+        [0, 5, 5, 5, 0],
+        [0, 5, 5, 5, 0],
+        [0, 5, 5, 5, 0],
+        [0, 0, 0, 0, 0],
+    ]))
+    summary = compare_frames(before, after)
+    assert "no_change" not in summary
+    assert "recolored=1" in summary
+
+
+def test_correspond_objects_rejects_weak_match_regardless_of_color():
+    # a weak positional overlap must be rejected even when color matches --
+    # the old classify_transition-level gate only fired on a color change,
+    # so an equally-weak same-color match was still trusted.
+    before = perceive_scene(_frame([
+        [0, 0, 0, 0, 0],
+        [0, 5, 5, 0, 0],
+        [0, 5, 5, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+    ]))
+    after = perceive_scene(_frame([
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 5, 5, 5],
+        [0, 0, 5, 5, 5],
+        [0, 0, 5, 5, 5],
+    ]))
+    mapping = correspond_objects(before, after)
+    assert mapping[before[0].object_id] is None
+
+
+def test_perceive_scene_stays_fast_with_hundreds_of_objects():
+    # regression guard for the O(objects x grid_area) containment search
+    # that made perceive_scene take up to ~14s on a busy 64x64 frame --
+    # a generous bound (well under a second) is enough to catch a
+    # regression back to the old per-object full-grid scan without being
+    # a flaky wall-clock assertion.
+    import time
+
+    grid = [[(x + y) % 10 for x in range(64)] for y in range(64)]
+    frame = _frame(grid)
+    start = time.time()
+    scene = perceive_scene(frame)
+    elapsed = time.time() - start
+    assert len(scene) > 100
+    assert elapsed < 2.0

@@ -124,3 +124,45 @@ def test_low_confidence_fallback_match_with_color_change_is_appear_disappear_not
         [8, 8, 8],
     ]
     assert _classify(before, after, width=3, height=3) == "OBJECT_APPEAR_DISAPPEAR"
+
+
+def test_object_moving_from_edge_into_the_field_is_object_move_not_hud():
+    # HUD_ONLY previously only checked the BEFORE endpoint of a moved
+    # object -- a small object starting at the edge and ending in the
+    # middle of the play field was wrongly classified HUD_ONLY.
+    before = [
+        [1, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+    ]
+    after = [
+        [0, 0, 0, 0, 0],
+        [0, 0, 1, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+    ]
+    assert _classify(before, after) == "OBJECT_MOVE"
+
+
+def test_object_staying_small_and_at_edge_at_both_endpoints_is_still_hud_only():
+    # the both-endpoints check must not over-correct into never firing
+    # HUD_ONLY for a moved pair -- a small object that stays at the edge
+    # the whole time is still a legitimate HUD_ONLY case.
+    before = [
+        [1, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+    ]
+    after = [
+        [0, 1, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+    ]
+    assert _classify(before, after) == "HUD_ONLY"
