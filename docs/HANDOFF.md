@@ -153,6 +153,17 @@ first (unlike `baseline-125`, which needs `baseline-130` done, or
 `exp-200`+, which needs `baseline-130` done) — see `STRATEGY.md` §7's
 table and the "Deferred as isolated experiments" note in §4.
 
+**Track 2 (`baseline-130-hypothesis`) status:** done on
+`feat/baseline-130-hypothesis-memory` — `StructuredMemoryState`
+(confirmed/working/rejected hypotheses, open questions, goal, plan,
+notable failures) added to `zerx/memory.py`, additive alongside the
+untouched `MemoryState`, behind `Config.structured_memory_on=False`
+(default off). `decide()` deliberately not touched (deferred prompt-wiring
+to `baseline-125`, per this repo's parallel-branch etiquette); wired only
+as an inert, config-gated refresh in `agent/my_agent.py`. Full suite:
+167 passed, 0 failed (136 baseline + 31 new). Pushed to
+`feat/baseline-130-hypothesis-memory`, not merged to `master`.
+
 **Integration plan** (after all 4 report their branch green):
 `docs/superpowers/plans/parallel-day3/INTEGRATION.md` — sequential merge
 into a `integration/day3` branch, one track at a time, full suite run

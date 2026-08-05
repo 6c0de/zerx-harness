@@ -6,7 +6,7 @@ responsibility to measure — this module never touches the action budget.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 Summarizer = Callable[[str, str], str]  # (previous_summary, recent_context) -> new_summary
@@ -51,3 +51,216 @@ def maybe_refresh(
         step_count=new_step_count,
         last_refreshed_step=new_step_count,
     )
+
+
+@dataclass(frozen=True)
+class ConfirmedRule:
+    statement: str
+    evidence_count: int = 1
+
+
+@dataclass(frozen=True)
+class Hypothesis:
+    statement: str
+    supporting_evidence: int = 1
+    contradicting_evidence: int = 0
+
+
+@dataclass
+class StructuredMemoryState:
+    """STRATEGY.md §2.4/§3.1's structured memory schema: distinguishes
+    confirmed rules, working hypotheses, and rejected hypotheses instead of
+    storing every model statement as one undifferentiated fact, to reduce
+    self-reinforcing hallucination in reflection memory. Off by default
+    (`Config.structured_memory_on`); `zerx/memory.py`'s existing `MemoryState`
+    is untouched and remains the baseline free-text memory.
+    """
+
+    confirmed_rules: list[ConfirmedRule] = field(default_factory=list)
+    working_hypotheses: list[Hypothesis] = field(default_factory=list)
+    rejected_hypotheses: list[Hypothesis] = field(default_factory=list)
+    open_questions: list[str] = field(default_factory=list)
+    current_goal: str = ""
+    current_plan: list[str] = field(default_factory=list)
+    notable_failures: list[str] = field(default_factory=list)
+    step_count: int = 0
+    last_refreshed_step: int = 0
+
+    def reset(self) -> None:
+        """Clear memory between games -- same guarantee as MemoryState.reset(),
+        at every field, not just the top-level object.
+        """
+        self.confirmed_rules = []
+        self.working_hypotheses = []
+        self.rejected_hypotheses = []
+        self.open_questions = []
+        self.current_goal = ""
+        self.current_plan = []
+        self.notable_failures = []
+        self.step_count = 0
+        self.last_refreshed_step = 0
+
+
+def record_hypothesis(state: StructuredMemoryState, statement: str) -> StructuredMemoryState:
+    """Add a new working hypothesis, or -- if this exact statement is
+    already tracked -- increment its supporting evidence instead of
+    duplicating it. A statement being (re-)recorded is no longer a
+    rejected hypothesis -- this is a fresh trial, so it is also cleared
+    from rejected_hypotheses (without carrying its old contradicting
+    evidence forward). Never mutates `state`.
+    """
+    existing = [h for h in state.working_hypotheses if h.statement == statement]
+    if existing:
+        updated = Hypothesis(
+            statement=statement,
+            supporting_evidence=existing[0].supporting_evidence + 1,
+            contradicting_evidence=existing[0].contradicting_evidence,
+        )
+        new_working = [updated if h.statement == statement else h for h in state.working_hypotheses]
+    else:
+        new_working = list(state.working_hypotheses) + [Hypothesis(statement=statement)]
+    new_rejected = [h for h in state.rejected_hypotheses if h.statement != statement]
+    return replace(state, working_hypotheses=new_working, rejected_hypotheses=new_rejected)
+
+
+def confirm_hypothesis(state: StructuredMemoryState, statement: str) -> StructuredMemoryState:
+    """Move a working hypothesis to confirmed_rules (carrying its evidence
+    count forward), or -- if it was never tracked as a hypothesis -- confirm
+    it directly with evidence_count=1. Deduplicates against an already
+    confirmed rule with the same statement by bumping its evidence_count.
+    A statement being confirmed can no longer also be a rejected
+    hypothesis, so it is cleared from rejected_hypotheses too -- a
+    statement lives in at most one of working/confirmed/rejected at a
+    time. Never mutates `state`.
+    """
+    matching = [h for h in state.working_hypotheses if h.statement == statement]
+    evidence_count = matching[0].supporting_evidence if matching else 1
+    new_working = [h for h in state.working_hypotheses if h.statement != statement]
+    new_rejected = [h for h in state.rejected_hypotheses if h.statement != statement]
+
+    already_confirmed = [r for r in state.confirmed_rules if r.statement == statement]
+    if already_confirmed:
+        bumped = ConfirmedRule(statement=statement, evidence_count=already_confirmed[0].evidence_count + evidence_count)
+        new_confirmed = [bumped if r.statement == statement else r for r in state.confirmed_rules]
+    else:
+        new_confirmed = list(state.confirmed_rules) + [ConfirmedRule(statement=statement, evidence_count=evidence_count)]
+
+    return replace(state, working_hypotheses=new_working, confirmed_rules=new_confirmed, rejected_hypotheses=new_rejected)
+
+
+def contradict_hypothesis(state: StructuredMemoryState, statement: str) -> StructuredMemoryState:
+    """Increment a working hypothesis's contradicting evidence; the moment
+    contradicting_evidence reaches or exceeds supporting_evidence, this is
+    a belief reversal -- move it from working_hypotheses to
+    rejected_hypotheses (STRATEGY.md §7's promotion metric). A statement
+    not currently tracked as a working hypothesis is a no-op. Never
+    mutates `state`.
+    """
+    matching = [h for h in state.working_hypotheses if h.statement == statement]
+    if not matching:
+        return state
+
+    current = matching[0]
+    updated = Hypothesis(
+        statement=statement,
+        supporting_evidence=current.supporting_evidence,
+        contradicting_evidence=current.contradicting_evidence + 1,
+    )
+
+    if updated.contradicting_evidence >= updated.supporting_evidence:
+        new_working = [h for h in state.working_hypotheses if h.statement != statement]
+        new_rejected = list(state.rejected_hypotheses) + [updated]
+        return replace(state, working_hypotheses=new_working, rejected_hypotheses=new_rejected)
+
+    new_working = [updated if h.statement == statement else h for h in state.working_hypotheses]
+    return replace(state, working_hypotheses=new_working)
+
+
+def add_open_question(state: StructuredMemoryState, question: str) -> StructuredMemoryState:
+    """Append an open question, deduped by exact text (repeatedly asking
+    the same open question should not bloat the rendered prompt). Never
+    mutates `state`.
+    """
+    if question in state.open_questions:
+        return replace(state)
+    return replace(state, open_questions=list(state.open_questions) + [question])
+
+
+def set_current_goal(state: StructuredMemoryState, goal: str) -> StructuredMemoryState:
+    """Replace the current goal. Never mutates `state`."""
+    return replace(state, current_goal=goal)
+
+
+def set_current_plan(state: StructuredMemoryState, plan: list[str]) -> StructuredMemoryState:
+    """Replace the current plan. Never mutates `state`."""
+    return replace(state, current_plan=list(plan))
+
+
+def record_notable_failure(state: StructuredMemoryState, failure: str) -> StructuredMemoryState:
+    """Append a notable failure. Not deduped -- a repeated identical
+    failure is itself meaningful signal (STRATEGY.md §3.1's ineffective-
+    action evidence uses repetition the same way). Never mutates `state`.
+    """
+    return replace(state, notable_failures=list(state.notable_failures) + [failure])
+
+
+def render_for_prompt(state: StructuredMemoryState) -> str:
+    """STRATEGY.md §3.1: 'The rendered prompt may include a compact
+    textual form; the stored source of truth stays machine-readable.'
+    This is that compact textual form -- a pure function, never the
+    source of truth itself.
+    """
+    confirmed = (
+        "\n".join(f"- {r.statement} (evidence={r.evidence_count})" for r in state.confirmed_rules)
+        or "(none yet)"
+    )
+    working = (
+        "\n".join(
+            f"- {h.statement} (support={h.supporting_evidence}, contradict={h.contradicting_evidence})"
+            for h in state.working_hypotheses
+        )
+        or "(none yet)"
+    )
+    rejected = (
+        "\n".join(
+            f"- {h.statement} (support={h.supporting_evidence}, contradict={h.contradicting_evidence})"
+            for h in state.rejected_hypotheses
+        )
+        or "(none yet)"
+    )
+    questions = "\n".join(f"- {q}" for q in state.open_questions) or "(none yet)"
+    plan = "; ".join(state.current_plan) or "(none)"
+    failures = "\n".join(f"- {f}" for f in state.notable_failures) or "(none yet)"
+
+    return (
+        f"Current goal: {state.current_goal or '(none set)'}\n"
+        f"Current plan: {plan}\n"
+        f"Confirmed rules:\n{confirmed}\n"
+        f"Working hypotheses:\n{working}\n"
+        f"Rejected hypotheses:\n{rejected}\n"
+        f"Open questions:\n{questions}\n"
+        f"Notable failures:\n{failures}"
+    )
+
+
+StructuredSummarizer = Callable[[StructuredMemoryState, str], StructuredMemoryState]
+# (previous_state, recent_context) -> new_state -- takes/returns the full
+# structured state, unlike Summarizer's str-in/str-out, because a
+# structured refresh may revise several fields in one pass.
+
+
+def maybe_refresh_structured(
+    state: StructuredMemoryState,
+    recent_context: str,
+    summarizer: StructuredSummarizer,
+    refresh_interval: int,
+) -> StructuredMemoryState:
+    """Same due/not-due/never-mutate contract as maybe_refresh, adapted to
+    StructuredSummarizer's full-state-in/full-state-out shape.
+    """
+    new_step_count = state.step_count + 1
+    due = (new_step_count - state.last_refreshed_step) >= refresh_interval
+    if not due:
+        return replace(state, step_count=new_step_count)
+    updated = summarizer(state, recent_context)
+    return replace(updated, step_count=new_step_count, last_refreshed_step=new_step_count)

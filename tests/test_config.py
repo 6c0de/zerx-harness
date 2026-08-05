@@ -122,3 +122,17 @@ def test_rejects_non_positive_candidate_count():
 def test_from_env_rejects_non_positive_candidate_count():
     with pytest.raises(ValueError):
         Config.from_env({"ZERX_CANDIDATE_COUNT": "0"})
+
+
+def test_structured_memory_on_defaults_false():
+    assert Config().structured_memory_on is False
+
+
+def test_from_env_missing_structured_memory_on_uses_default():
+    cfg = Config.from_env({})
+    assert cfg.structured_memory_on is False
+
+
+def test_from_env_enables_structured_memory_on():
+    cfg = Config.from_env({"ZERX_STRUCTURED_MEMORY_ON": "true"})
+    assert cfg.structured_memory_on is True

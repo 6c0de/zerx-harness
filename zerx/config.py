@@ -47,6 +47,7 @@ class Config:
     exact_state_suppression_on: bool = False
     duck_objects_on: bool = False  # exp-150-duck-tools Variants A+B (zerx/scene.py) — off by default
     candidate_count: int = 1
+    structured_memory_on: bool = False
 
     def __post_init__(self) -> None:
         if self.backend == "cerebras_dev" and self.platform == "kaggle":
@@ -84,6 +85,9 @@ class Config:
             ),
             duck_objects_on=_env_bool(env, "ZERX_DUCK_OBJECTS_ON", cls.duck_objects_on),
             candidate_count=_env_int(env, "ZERX_CANDIDATE_COUNT", cls.candidate_count),
+            structured_memory_on=_env_bool(
+                env, "ZERX_STRUCTURED_MEMORY_ON", cls.structured_memory_on
+            ),
         )
 
     def to_json(self) -> str:
