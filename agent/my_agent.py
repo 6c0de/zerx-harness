@@ -29,7 +29,7 @@ from zerx.config import Config
 from zerx.exact_state_memory import ExactStateMemory, action_signature
 from zerx.heuristics import DeadSignatureTracker
 from zerx.memory import MemoryState, StructuredMemoryState, maybe_refresh_structured
-from zerx.model_backend import GemmaModelBackend
+from zerx.model_backend import select_backend
 from zerx.perception import perceive
 from zerx.policy import Decision, _FALLBACK_PREFERENCE, decide
 from zerx.transitions import TransitionLedger, grid_hash
@@ -153,7 +153,7 @@ class MyAgent(Agent):
         self._config = Config.from_env()
         self._memory = MemoryState()
         self._dead_signatures = DeadSignatureTracker()
-        self._backend = GemmaModelBackend(self._config.model_revision)
+        self._backend = select_backend(self._config)
         self._transitions = TransitionLedger()
         self._exact_state_memory = ExactStateMemory()
         self._actions_taken = 0

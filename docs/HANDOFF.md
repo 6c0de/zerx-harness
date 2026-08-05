@@ -130,11 +130,14 @@ parallel tracks below (none of them touch Kaggle).
 
 ## Known failures or risks (carried over, still real)
 
-1. `zerx/backends/cerebras_dev.py`'s `platform` kwarg defaults to `"local"`
-   and is never wired to the real `Config.platform` — inert today (nothing
-   constructs `CerebrasDevBackend` outside its own tests). **Whichever
-   track adds a backend-selection factory must forward
-   `platform=config.platform` explicitly.**
+1. ~~`zerx/backends/cerebras_dev.py`'s `platform` kwarg defaults to
+   `"local"` and is never wired to the real `Config.platform`~~ **Fixed**
+   on `feat/baseline-120-backend-wiring` — `zerx/model_backend.py`'s new
+   `select_backend(config)` factory constructs the backend named by
+   `config.backend` and forwards `config.platform` to `CerebrasDevBackend`
+   explicitly; `agent/my_agent.py`'s `MyAgent.__init__` now calls it
+   instead of hardcoding `GemmaModelBackend`. See
+   `docs/superpowers/plans/2026-08-05-baseline-120-backend-wiring.md`.
 2. No true rate-limit backoff in `CerebrasDevBackend.generate()`'s retry
    loop — inert until a live Cerebras test exists.
 3. `parse_action(None, ...)` raises `AttributeError`, inert because
@@ -211,20 +214,21 @@ split (see "Exact next action" above). Each track appends its own
 one-line status here; the integration owner does the final reconciliation
 once all 4 land, per that README's ownership matrix.
 
+**Track 1 (backend selection wiring) — done.** Branch
+`feat/baseline-120-backend-wiring`, commit `dd74268` (plus a pending
+docs commit updating this file). `select_backend(config: Config) ->
+ModelBackend` added to `zerx/model_backend.py`, matching the frozen
+interface in `docs/superpowers/plans/parallel-baseline-120/README.md`
+exactly. Full suite: 270 passed, 0 failed (261 base + 9 new: 2 config, 7
+backend selection). See
+`docs/superpowers/plans/2026-08-05-baseline-120-backend-wiring.md`.
+
 - Track 4 (`feat/baseline-120-colab-validation`, Colab validation): Part A
   complete (multi-game notebook + real per-game RHAE capture, full local
   suite green at 268 tests) — commit
-  `48bfcc8b352595393c6de01f042572cc42880a99`. Part B blocked this session:
-  Track 1's `select_backend` (branch
-  `feat/baseline-120-backend-wiring`) is not yet reachable on origin or
-  locally (only `origin/feat/baseline-120-eval-harness`, Track 2, exists
-  so far), and no `CEREBRAS_API_KEY` is available in this environment —
-  so neither the `cerebras_dev` dev-lane sweep nor its standalone
-  prompt/parse sanity check could run. The actual Colab GPU run also
-  still needs a human to execute the regenerated notebook in a real
-  Colab browser session. See
-  `docs/superpowers/experiments/baseline-120.md` for full detail and the
-  `investigate` conclusion this partial state produced.
+  `48bfcc8b352595393c6de01f042572cc42880a99`. Part B was initially blocked
+  on Track 1's `select_backend` not being reachable yet; now merging
+  Track 1's branch in to unblock it (see below for the post-merge result).
 
 ## Uncommitted or external artifacts
 

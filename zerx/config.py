@@ -48,6 +48,7 @@ class Config:
     duck_objects_on: bool = False  # exp-150-duck-tools Variants A+B (zerx/scene.py) — off by default
     candidate_count: int = 1
     structured_memory_on: bool = False
+    gemma_base_url: str = "http://localhost:8000/v1/chat/completions"
 
     def __post_init__(self) -> None:
         if self.backend == "cerebras_dev" and self.platform == "kaggle":
@@ -88,6 +89,7 @@ class Config:
             structured_memory_on=_env_bool(
                 env, "ZERX_STRUCTURED_MEMORY_ON", cls.structured_memory_on
             ),
+            gemma_base_url=_env_str(env, "ZERX_GEMMA_BASE_URL", cls.gemma_base_url),
         )
 
     def to_json(self) -> str:
