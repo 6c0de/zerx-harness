@@ -31,7 +31,7 @@ from zerx.heuristics import DeadSignatureTracker
 from zerx.memory import MemoryState
 from zerx.model_backend import GemmaModelBackend
 from zerx.perception import perceive
-from zerx.policy import Decision, _deterministic_fallback, _FALLBACK_PREFERENCE, decide
+from zerx.policy import Decision, _FALLBACK_PREFERENCE, decide
 from zerx.transitions import TransitionLedger, grid_hash
 from zerx.types import Action, ActionName, GameFrame
 
@@ -97,6 +97,21 @@ def _find_object_by_label(frame: GameFrame, label: str):
         if obj.label == label:
             return obj
     return None
+
+
+def _shapes_match(a: GameFrame, b: GameFrame) -> bool:
+    """True iff `a.grid` and `b.grid` have identical dimensions. Guards the
+    exact-state outcome-feedback block (baseline-115-exact-state-memory)
+    against `zerx.transitions._diff`'s shape assumption — `_diff` only
+    iterates over `before`'s dimensions, so a before/after grid-shape
+    mismatch (e.g. the very first frame's empty NOT_PLAYED grid transitioning
+    to a real grid) can silently misreport "no change" instead of a real
+    diff. `zerx/transitions.py` is shared infrastructure and is not modified
+    for this fix; the guard lives here instead.
+    """
+    return len(a.grid) == len(b.grid) and all(
+        len(row_a) == len(row_b) for row_a, row_b in zip(a.grid, b.grid)
+    )
 
 
 def _safe_fallback_action(latest_frame: FrameData) -> GameAction:
@@ -176,7 +191,11 @@ class MyAgent(Agent):
             and record is not None
             and self._pending_decision is not None
             and self._pending_before_frame is not None
+            and _shapes_match(self._pending_before_frame, frame)
         ):
+            # level_delta is currently always 0 -- _to_game_frame hardcodes
+            # score=0; this channel is inert until a real score/level source
+            # is wired (see review notes).
             self._exact_state_memory.record_outcome(
                 state_signature=grid_hash(self._pending_before_frame),
                 action_signature=action_signature(self._pending_decision.action),
@@ -197,25 +216,42 @@ class MyAgent(Agent):
         )
 
         # --- baseline-115-exact-state-memory (feat/baseline-115-exact-state-memory) ---
-        if self._config.exact_state_suppression_on and self._exact_state_memory.is_suppressed(
-            grid_hash(frame), action_signature(decision.action)
-        ):
-            alternative_names = [
-                name
-                for name in _FALLBACK_PREFERENCE
-                if name in frame.legal_actions and name != decision.action.name
-            ]
-            if alternative_names:
-                name = alternative_names[0]
-                replacement = (
-                    Action(name=name, x=32, y=32) if name == ActionName.ACTION6 else Action(name=name)
-                )
-                decision = replace(
-                    decision,
-                    action=replacement,
-                    source="fallback_exact_state_suppressed",
-                    target_object_label=None,
-                )
+        # Guarded by `not frame.is_game_over`: decide()'s terminal
+        # short-circuit (zerx/policy.py) always returns RESET on a
+        # GAME_OVER/NOT_PLAYED frame, and that must never be swapped out —
+        # doing so would permanently break the reset-and-retry loop the
+        # instant (state, RESET) itself becomes a recorded no-op.
+        if not frame.is_game_over and self._config.exact_state_suppression_on:
+            state_sig = grid_hash(frame)
+            if self._exact_state_memory.is_suppressed(state_sig, action_signature(decision.action)):
+                replacement = None
+                for name in _FALLBACK_PREFERENCE:
+                    if name not in frame.legal_actions or name == decision.action.name:
+                        continue
+                    candidate = (
+                        Action(name=name, x=32, y=32)
+                        if name == ActionName.ACTION6
+                        else Action(name=name)
+                    )
+                    # The candidate itself may ALSO be a known no-op for this
+                    # exact state — skip past it too, instead of swapping in
+                    # another suppressed action (which would defeat the
+                    # feature's whole purpose of escaping a repeated no-op).
+                    if not self._exact_state_memory.is_suppressed(
+                        state_sig, action_signature(candidate)
+                    ):
+                        replacement = candidate
+                        break
+                if replacement is not None:
+                    decision = replace(
+                        decision,
+                        action=replacement,
+                        source="fallback_exact_state_suppressed",
+                        target_object_label=None,
+                    )
+                # else: every legal alternative is also a known no-op for
+                # this exact state -- leave `decision` unchanged rather than
+                # invent an unvalidated move (project fallback philosophy).
         # --- end baseline-115-exact-state-memory ---
 
         self._actions_taken += 1

@@ -91,3 +91,61 @@ def test_exact_state_suppression_does_not_affect_the_first_ever_action(monkeypat
     result_on = agent_on.choose_action([frame2], frame2)
 
     assert result_off is result_on is GameAction.ACTION5
+
+
+def test_exact_state_suppression_never_overrides_the_terminal_reset_shortcut(monkeypatch):
+    """C1 regression: decide()'s terminal short-circuit (frame.is_game_over
+    -> always RESET, zerx/policy.py) must never be swapped out by the
+    suppression-check block, even once (state, RESET) itself becomes a
+    recorded no-op. The frame advertises non-RESET available_actions
+    ([1, 5]) precisely so the pre-fix bug path -- RESET getting recorded as
+    a no-op transition and then swapped for ACTION5 -- is actually
+    exercised, not trivially avoided by an empty legal-action set.
+    """
+    frame = FrameData(
+        frame=[[[0, 0], [0, 0]]],
+        state=GameState.GAME_OVER,
+        available_actions=[1, 5],
+    )
+    agent = _make_agent(monkeypatch, suppression_on=True)
+
+    for _ in range(4):
+        result = agent.choose_action([frame], frame)
+        assert result is GameAction.RESET
+
+
+def test_exact_state_suppression_cascades_past_a_second_suppressed_alternative(monkeypatch):
+    """C2 regression: once the first-preference alternative (ACTION1) is
+    ALSO a recorded no-op for this exact state, the suppression swap must
+    keep walking _FALLBACK_PREFERENCE instead of getting stuck repeating
+    ACTION1 forever -- it must reach ACTION2.
+
+    Wiring (verified by running this test, not guessed):
+      call 1: no evidence yet -> deterministic fallback preference ACTION5.
+      call 2: outcome-feedback at the START of this call records (hash,
+        ACTION5) as a no-op from call 1's zero-change transition ->
+        decide() still deterministically re-proposes ACTION5 (the frame
+        never changes) -> suppression swaps it for the next legal
+        preference, ACTION1.
+      call 3: outcome-feedback now records (hash, ACTION1) as ALSO a no-op
+        -> decide() proposes ACTION5 again (still suppressed) -> ACTION1 is
+        the first alternative but it is suppressed too -> must cascade past
+        it to ACTION2.
+    """
+    frame = FrameData(
+        frame=[[[0, 0], [0, 0]]],
+        state=GameState.NOT_FINISHED,
+        available_actions=[1, 2, 5],  # -> legal = {ACTION1, ACTION2, ACTION5, RESET}
+    )
+    agent = _make_agent(monkeypatch, suppression_on=True)
+
+    first = agent.choose_action([frame], frame)
+    assert first is GameAction.ACTION5
+
+    second = agent.choose_action([frame, frame], frame)
+    assert second is GameAction.ACTION1
+    assert second.reasoning["source"] == "fallback_exact_state_suppressed"
+
+    third = agent.choose_action([frame, frame, frame], frame)
+    assert third is GameAction.ACTION2
+    assert third.reasoning["source"] == "fallback_exact_state_suppressed"
