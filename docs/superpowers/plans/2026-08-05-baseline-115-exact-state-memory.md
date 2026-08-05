@@ -649,6 +649,15 @@ with:
         history: Tuple[GameFrame, ...] = tuple(_to_game_frame(f) for f in frames[-4:])
 ```
 
+> **⚠️ Superseded by design decision #5, commit `e5bb04d`.** The block below
+> is what was originally implemented and task-reviewed — it has two Critical
+> bugs (no terminal-frame guard; replacement candidates never checked for
+> their own suppression) found by the final whole-branch review and fixed
+> post-hoc. **Do not implement this version.** Use the corrected block from
+> design decision #5 instead (`not frame.is_game_over` guard; walk
+> `_FALLBACK_PREFERENCE` checking `is_suppressed` on each candidate). Left
+> here only as the historical record of what Step 3 originally said.
+
 Replace the `decide()` call block:
 
 ```python
