@@ -76,3 +76,13 @@ def test_rejects_non_positive_budget_soft_cap():
 def test_from_env_rejects_non_positive_budget_soft_cap():
     with pytest.raises(ValueError):
         Config.from_env({"ZERX_BUDGET_SOFT_CAP": "0"})
+
+
+def test_duck_objects_on_defaults_false():
+    config = Config()
+    assert config.duck_objects_on is False
+
+
+def test_duck_objects_on_from_env():
+    config = Config.from_env({"ZERX_DUCK_OBJECTS_ON": "true"})
+    assert config.duck_objects_on is True
