@@ -72,21 +72,59 @@ score — not just an aggregate as before.
 
 ## Cerebras prompt/parse sanity check (Part A step 3)
 
-**Skipped.** No `CEREBRAS_API_KEY` was present in this session's shell
-environment (checked twice: once before writing the plan, once
-immediately before this step — both `absent`, without printing the
-variable's value at any point). Per
-`docs/superpowers/plans/parallel-baseline-120/person-4-colab-validation.md`'s
-own explicit instruction ("if you genuinely cannot get a key, say so
-explicitly in your status update rather than silently skipping it") this
-is recorded here rather than silently omitted. Each teammate uses their
-own Cerebras credential per `AGENTS.md`'s team contract — whoever next
-works this branch with a key available should construct
-`CerebrasDevBackend` directly, call `zerx.policy.build_prompt`/`parse_action`
-against a synthetic `PerceptionResult`/`MemoryState` (no game loop, no
-heuristics, no memory refresh — see this plan's Task 4 for the exact,
-ready-to-adapt script), and record the result here before Part B's full
-sweep.
+**Completed, 2026-08-06**, once a `CEREBRAS_API_KEY` became available in
+the executing user's own terminal (not this session's tool environment —
+see below). `CerebrasDevBackend` constructed directly
+(`model_id="gemma-4-31b"`, `platform="local"`), called with
+`zerx.policy.build_prompt`'s output against a synthetic
+`PerceptionResult`/`MemoryState` (no game loop, no heuristics, no memory
+refresh), then `zerx.policy.parse_action`.
+
+**First attempt hit a real infrastructure bug, not a credential/model
+problem.** `backend.generate()` raised `urllib.error.HTTPError: HTTP
+Error 403: Forbidden`, body `error code: 1010` — a **Cloudflare WAF
+block**, not a Cerebras auth/model rejection. Diagnosed by querying
+`GET https://api.cerebras.ai/v1/models` directly: with the default
+`urllib` request (no explicit `User-Agent`), the identical 403/1010
+occurred; adding an explicit `User-Agent` header made the same request
+succeed (HTTP 200), listing this account's real live models:
+`gpt-oss-120b`, `gemma-4-31b`, `zai-glm-4.7` — confirming `gemma-4-31b`
+(no `-it`, per `AGENTS.md`'s Cerebras development boundary) was the
+correct model id all along; the credential was never the problem either.
+**Fixed in `zerx/backends/cerebras_dev.py`** (commit `ebfdaf1`, outside
+this track's originally-scoped files — expanded with explicit owner
+approval since the same code path blocks Part B's real harness sweep
+too): `CerebrasDevBackend.generate()` now sends
+`"User-Agent": "zerx-harness-cerebras-dev/1.0"` on every request. New
+regression test `test_request_sends_a_non_default_user_agent` in
+`tests/test_cerebras_dev.py`. Full suite after the fix: **278 passed, 0
+failed**.
+
+**Re-run after the fix: real API calls succeeded (HTTP 200, ~0.4–0.5s
+latency both times) but both responses failed to parse into a legal
+action:**
+- Attempt 1: raw response `{"action": "ACTION0", "data": {}}` — `ACTION0`
+  is not in the legal-action vocabulary (`RESET`, `ACTION1`–`ACTION7`).
+- Attempt 2: raw response `{"action": "WAIT", "data": {}}` — same
+  problem, a different invented name.
+
+**Root cause, confirmed by reading `zerx/policy.py`'s `build_prompt()`**
+(the exact function `decide()` calls in the real harness, not a
+sanity-check-only artifact): the prompt template never lists the actual
+legal action names anywhere in its text — it only shows the literal
+placeholder string `<ACTION_NAME>` in its instruction line, and
+`build_prompt()`'s signature doesn't even accept a `legal_actions`
+parameter. A model with no other source of knowledge about this specific
+game's action vocabulary has no way to know that `ACTION1`–`ACTION7`/`RESET`
+are the only valid strings, so it invents a plausible-sounding one
+instead. **This is a real, useful finding about the existing
+`baseline-120-reki-core` prompt design, not fixed here** — `build_prompt()`
+is core prompt-engineering logic well outside this track's scope, and
+patching it now would bias the exact thing this validation run is
+supposed to measure. Expect this to show up as a high
+`parsed=None`/fallback rate in Part B's real harness sweep below, for
+this same reason, not because of a broken connection — this is itself
+part of `baseline-120`'s real signal, not noise to explain away.
 
 ## Part B — dev-lane `cerebras_dev` sweep via the real harness
 
@@ -123,13 +161,19 @@ predicted). Confirmed post-merge:
   invoking `scripts/play_local.py` with `ZERX_BACKEND=cerebras_dev`, or
   the request will carry the wrong model id for Cerebras's endpoint.
 
-**Still blocked — now on exactly one precondition, not two.** No
-`CEREBRAS_API_KEY` is available in this environment (checked three times
-this session: before writing the plan, before Part A step 3, and again
-after this merge — all `absent`, value never printed). The
-Track-1-availability blocker is fully resolved; only the credential
-blocks the actual sweep now. Re-attempt as soon as a Cerebras key is
-available in the executing session's own environment:
+**Unblocked, 2026-08-06.** Both preconditions are now resolved: Track 1
+merged (above), and a `CEREBRAS_API_KEY` became available in the
+executing user's own terminal — not this session's tool environment,
+which runs as a separate process and never gained access to it (verified
+`absent` in this session's own Bash/PowerShell tool processes even after
+the user set it, since a newly-set environment variable is only visible
+to processes started afterward, and the tool processes here predate the
+change). The Part A step 3 sanity check above also surfaced and fixed a
+real Cloudflare-WAF blocker in `zerx/backends/cerebras_dev.py` shared by
+this exact code path — see above.
+
+Command for whoever runs this in a terminal where `CEREBRAS_API_KEY` is
+actually set:
 
 ```bash
 export ZERX_BACKEND=cerebras_dev
@@ -137,6 +181,11 @@ export ZERX_PLATFORM=local
 export ZERX_MODEL_REVISION=gemma-4-31b
 .venv/Scripts/python.exe scripts/play_local.py --game ls20,vc33,su15,tn36,ka59,lf52,tr87,sc25 --max-steps 100
 ```
+
+Given the sanity check's finding above (the prompt never lists legal
+action names), expect a high rate of parse failures/fallback actions in
+this run — that is real signal about the current prompt design, not a
+sign something is broken.
 
 ## Part B — authoritative Colab Gemma-4-31B-it run
 
