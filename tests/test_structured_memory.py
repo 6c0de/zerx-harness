@@ -167,3 +167,39 @@ def test_record_notable_failure_appends_without_deduping():
     state = record_notable_failure(state, "clicked wall, no effect")
     state = record_notable_failure(state, "clicked wall, no effect")
     assert state.notable_failures == ["clicked wall, no effect", "clicked wall, no effect"]
+
+
+from zerx.memory import render_for_prompt
+
+
+def test_render_for_prompt_on_empty_state_uses_placeholders():
+    text = render_for_prompt(StructuredMemoryState())
+    assert "(none set)" in text  # goal
+    assert "(none)" in text  # plan
+    assert "(none yet)" in text  # confirmed rules / hypotheses / questions / failures
+
+
+def test_render_for_prompt_includes_populated_fields():
+    state = StructuredMemoryState(
+        confirmed_rules=[ConfirmedRule(statement="key opens door", evidence_count=3)],
+        working_hypotheses=[Hypothesis(statement="green tile is safe", supporting_evidence=2, contradicting_evidence=1)],
+        rejected_hypotheses=[Hypothesis(statement="red tile is safe", supporting_evidence=1, contradicting_evidence=2)],
+        open_questions=["what does ACTION3 do"],
+        current_goal="reach the exit",
+        current_plan=["click door", "move right"],
+        notable_failures=["clicked wall, no effect"],
+    )
+    text = render_for_prompt(state)
+    assert "key opens door" in text and "3" in text
+    assert "green tile is safe" in text and "support=2" in text and "contradict=1" in text
+    assert "red tile is safe" in text
+    assert "what does ACTION3 do" in text
+    assert "reach the exit" in text
+    assert "click door" in text and "move right" in text
+    assert "clicked wall, no effect" in text
+
+
+def test_render_for_prompt_is_pure_and_deterministic():
+    state = StructuredMemoryState(current_goal="reach the exit")
+    assert render_for_prompt(state) == render_for_prompt(state)
+    assert state.current_goal == "reach the exit"  # not mutated

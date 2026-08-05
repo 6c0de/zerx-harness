@@ -193,3 +193,38 @@ def record_notable_failure(state: StructuredMemoryState, failure: str) -> Struct
     action evidence uses repetition the same way). Never mutates `state`.
     """
     return replace(state, notable_failures=list(state.notable_failures) + [failure])
+
+
+def render_for_prompt(state: StructuredMemoryState) -> str:
+    """STRATEGY.md §3.1: 'The rendered prompt may include a compact
+    textual form; the stored source of truth stays machine-readable.'
+    This is that compact textual form -- a pure function, never the
+    source of truth itself.
+    """
+    confirmed = (
+        "\n".join(f"- {r.statement} (evidence={r.evidence_count})" for r in state.confirmed_rules)
+        or "(none yet)"
+    )
+    working = (
+        "\n".join(
+            f"- {h.statement} (support={h.supporting_evidence}, contradict={h.contradicting_evidence})"
+            for h in state.working_hypotheses
+        )
+        or "(none yet)"
+    )
+    rejected = (
+        "\n".join(f"- {h.statement}" for h in state.rejected_hypotheses) or "(none yet)"
+    )
+    questions = "\n".join(f"- {q}" for q in state.open_questions) or "(none yet)"
+    plan = "; ".join(state.current_plan) or "(none)"
+    failures = "\n".join(f"- {f}" for f in state.notable_failures) or "(none yet)"
+
+    return (
+        f"Current goal: {state.current_goal or '(none set)'}\n"
+        f"Current plan: {plan}\n"
+        f"Confirmed rules:\n{confirmed}\n"
+        f"Working hypotheses:\n{working}\n"
+        f"Rejected hypotheses:\n{rejected}\n"
+        f"Open questions:\n{questions}\n"
+        f"Notable failures:\n{failures}"
+    )
