@@ -204,6 +204,28 @@ directly rather than trusting the auto-merge.
    `master` (see "Parallel work split" above) — safe to delete once the
    human owner confirms, not deleted automatically.
 
+## baseline-120 parallel work status (starting 2026-08-05)
+
+Per `docs/superpowers/plans/parallel-baseline-120/README.md`'s 4-track
+split (see "Exact next action" above). Each track appends its own
+one-line status here; the integration owner does the final reconciliation
+once all 4 land, per that README's ownership matrix.
+
+- Track 4 (`feat/baseline-120-colab-validation`, Colab validation): Part A
+  complete (multi-game notebook + real per-game RHAE capture, full local
+  suite green at 268 tests) — commit
+  `48bfcc8b352595393c6de01f042572cc42880a99`. Part B blocked this session:
+  Track 1's `select_backend` (branch
+  `feat/baseline-120-backend-wiring`) is not yet reachable on origin or
+  locally (only `origin/feat/baseline-120-eval-harness`, Track 2, exists
+  so far), and no `CEREBRAS_API_KEY` is available in this environment —
+  so neither the `cerebras_dev` dev-lane sweep nor its standalone
+  prompt/parse sanity check could run. The actual Colab GPU run also
+  still needs a human to execute the regenerated notebook in a real
+  Colab browser session. See
+  `docs/superpowers/experiments/baseline-120.md` for full detail and the
+  `investigate` conclusion this partial state produced.
+
 ## Uncommitted or external artifacts
 
 None tracked or required. `.venv/`, `vendor/ARC-AGI-3-Agents/`,
