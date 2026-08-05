@@ -323,3 +323,85 @@ def correspond_objects(
 
 
 find_correspondences = correspond_objects
+
+NO_CHANGE = "NO_CHANGE"
+HUD_ONLY = "HUD_ONLY"
+OBJECT_MOVE = "OBJECT_MOVE"
+OBJECT_APPEAR_DISAPPEAR = "OBJECT_APPEAR_DISAPPEAR"
+RECOLOR_OR_TRANSFORM = "RECOLOR_OR_TRANSFORM"
+LEVEL_BOUNDARY = "LEVEL_BOUNDARY"
+TERMINAL = "TERMINAL"
+UNKNOWN_CHANGE = "UNKNOWN_CHANGE"
+
+_HUD_MAX_AREA = 4
+
+
+def _touches_edge(bbox: Tuple[int, int, int, int], width: int, height: int) -> bool:
+    min_x, min_y, max_x, max_y = bbox
+    return min_x == 0 or min_y == 0 or max_x == width - 1 or max_y == height - 1
+
+
+def classify_transition(
+    before: Tuple[SceneObject, ...],
+    after: Tuple[SceneObject, ...],
+    correspondence: Dict[int, Optional[int]],
+    terminal: bool,
+    level_delta: int,
+    grid_width: int = 64,
+    grid_height: int = 64,
+) -> str:
+    """STRATEGY.md SS5.4's gameplay-change taxonomy -- deterministic where
+    possible, explicitly uncertain otherwise. `terminal` and `level_delta`
+    take priority over any pixel-level classification. HUD_ONLY only fires
+    when *every* changed object is small and edge-adjacent; anything less
+    clear-cut falls through toward UNKNOWN_CHANGE rather than a falsely
+    confident label -- "a shrinking edge bar is never, by itself, proof a
+    puzzle action succeeded."
+    """
+    if terminal:
+        return TERMINAL
+    if level_delta != 0:
+        return LEVEL_BOUNDARY
+
+    before_by_id = {o.object_id: o for o in before}
+    after_by_id = {o.object_id: o for o in after}
+    matched_after_ids = {v for v in correspondence.values() if v is not None}
+
+    disappeared = [before_by_id[bid] for bid, aid in correspondence.items() if aid is None]
+    appeared = [a for a in after if a.object_id not in matched_after_ids]
+
+    moved: List[SceneObject] = []
+    recolored: List[SceneObject] = []
+    for bid, aid in correspondence.items():
+        if aid is None:
+            continue
+        b, a = before_by_id[bid], after_by_id[aid]
+        color_changed = b.color != a.color
+        shape_changed = b.shape_hash != a.shape_hash and not color_changed
+        # If both color AND area changed significantly, likely disappear/appear not recolor
+        area_ratio = max(b.area, a.area) / min(b.area, a.area) if min(b.area, a.area) > 0 else float('inf')
+        if color_changed and area_ratio > 3:
+            disappeared.append(b)
+            appeared.append(a)
+        elif color_changed or shape_changed:
+            recolored.append(b)
+        elif b.centroid != a.centroid:
+            moved.append(b)
+
+    changed_objects = disappeared + appeared + moved + recolored
+    if not changed_objects:
+        return NO_CHANGE
+
+    if all(
+        obj.area <= _HUD_MAX_AREA and _touches_edge(obj.bbox, grid_width, grid_height)
+        for obj in changed_objects
+    ):
+        return HUD_ONLY
+
+    if disappeared or appeared:
+        return OBJECT_APPEAR_DISAPPEAR
+    if recolored:
+        return RECOLOR_OR_TRANSFORM
+    if moved:
+        return OBJECT_MOVE
+    return UNKNOWN_CHANGE
