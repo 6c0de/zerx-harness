@@ -88,3 +88,25 @@ def test_raises_after_exhausting_retries():
 def test_never_constructs_when_platform_kaggle():
     with pytest.raises(ValueError):
         CerebrasDevBackend(model_id="gemma-4-31b", api_key="sk-test-not-real", platform="kaggle")
+
+
+def test_request_sends_a_non_default_user_agent():
+    """Confirmed live (2026-08-05): Cerebras's Cloudflare WAF returns HTTP
+    403 (Cloudflare error 1010, "browser signature" block) for requests
+    carrying urllib's default User-Agent ("Python-urllib/3.x"), even with
+    a valid credential and a valid model id -- verified by retrying the
+    identical request with an explicit User-Agent header, which succeeded
+    (HTTP 200) with the same key. Must send a real, non-default
+    User-Agent on every request or every cerebras_dev call fails
+    regardless of credential/model correctness.
+    """
+    captured = []
+    backend = CerebrasDevBackend(
+        model_id="gemma-4-31b",
+        api_key="sk-test-not-real",
+        http_post=_fake_http_post(_ok_response(), captured=captured),
+    )
+    backend.generate("prompt text")
+    user_agent = captured[0]["headers"].get("User-Agent", "")
+    assert user_agent
+    assert "python-urllib" not in user_agent.lower()

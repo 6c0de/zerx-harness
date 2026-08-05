@@ -145,9 +145,91 @@ def test_build_surfaces_real_vllm_server_log_on_startup_failure():
     assert "poll()" in combined  # detects the process dying early, not just a timeout
 
 
-def test_build_runs_one_public_game_via_play_local():
+def test_game_sample_includes_the_existing_ls20_vc33_precedent():
+    """docs/superpowers/plans/parallel-baseline-120/README.md's own
+    'concrete, empirical finding' section measured baseline-120's
+    fallback-only reference (0.0 aggregate score, 0 levels completed,
+    all-ACTION6) by running ls20+vc33 -- the Colab game sample must
+    include both so this track's real-model result is comparable to that
+    measured reference, not a disjoint game set.
+    """
+    assert "ls20" in build_colab_notebook.GAME_SAMPLE
+    assert "vc33" in build_colab_notebook.GAME_SAMPLE
+
+
+def test_game_sample_is_larger_than_baseline_100s_single_game_sample():
+    """baseline-100.md's own conclusion ('investigate', not 'keep') was
+    partly because only one game (ls20) was ever played. AGENTS.md's
+    'repeated seeds/configurations' and 'per-game regressions' language
+    argues for more than that before this rung can be promoted.
+    """
+    assert len(build_colab_notebook.GAME_SAMPLE) >= 6
+
+
+def test_smoke_game_cell_plays_every_sampled_game_directly_via_myagent():
+    """Replaces the old subprocess call to scripts/play_local.py: capturing
+    real per-game RHAE requires arc.get_scorecard() to be queried in the
+    SAME Python process that played the games (a child process's Arcade/
+    scorecard state is unreachable from a later notebook cell), so this
+    cell now drives MyAgent directly instead of shelling out.
+    """
     combined = _all_cell_sources(build_colab_notebook.build())
-    assert "play_local.py" in combined
+    assert "arc_agi.Arcade" in combined
+    assert "agent.main()" in combined
+    for game_id in build_colab_notebook.GAME_SAMPLE:
+        assert f'"{game_id}"' in combined
+
+
+def test_smoke_game_cell_caps_steps_below_play_locals_default_for_colab_time_budget():
+    """8 games x play_local.py's 200-step default risked exceeding a
+    single Colab session at an unmeasured 31B per-decision latency -- see
+    docs/superpowers/experiments/baseline-120.md's wall-clock estimate.
+    """
+    assert build_colab_notebook.MAX_STEPS_PER_GAME < 200
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert "MAX_STEPS_PER_GAME" in combined
+
+
+def test_smoke_game_cell_isolates_one_games_exception_from_the_rest():
+    """A single game's unhandled exception must not lose the results
+    already collected for earlier games in the sample -- each game is
+    wrapped in its own try/except that records the failure and continues
+    to the next game.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert "except Exception as exc" in combined
+    assert '"exception": repr(exc)' in combined
+
+
+def test_smoke_game_cell_still_documents_the_gemma_backend_and_vllm_server():
+    """Preserves the existing test_build_wires_gemma_model_backend_against_local_vllm_server
+    guarantee under the new cell structure: a reader must still be able to
+    see that ZERX_BACKEND=gemma_local resolves to GemmaModelBackend against
+    the local vLLM server this notebook just started.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert "GemmaModelBackend" in combined
+    assert "localhost:8000" in combined
+
+
+def test_save_results_cell_captures_real_rhae_via_get_scorecard():
+    """docs/superpowers/experiments/baseline-100.md's own 'Known gap' --
+    the old save_results_cell recorded only environment/setup metadata,
+    never the actual per-game outcome or RHAE. Must now query
+    arc.get_scorecard()'s EnvironmentScorecard per game (README.md's
+    frozen interface: EnvironmentScorecard.environments, each an
+    EnvironmentScoreList with .score/.actions/.levels_completed, matched
+    by .id).
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert "arc.get_scorecard()" in combined
+    assert "find_environment" in combined
+
+
+def test_save_results_cell_saves_full_per_game_breakdown_not_just_aggregate():
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert '"per_game": per_game_full' in combined
+    assert '"game_id": "ls20"' not in combined  # no longer a single hardcoded game
 
 
 def test_build_saves_structured_results_outside_ephemeral_storage():

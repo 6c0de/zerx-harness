@@ -266,6 +266,34 @@ baseline-actions data for that game), distinct from a genuine `0.0` —
 `ls20` observed with `rhae=None` at 5-step cap in this track's own test
 run. See `docs/superpowers/plans/2026-08-05-baseline-120-eval-harness.md`.
 
+**Track 4 (Colab validation) — Part A done, Part B partial (dev-lane
+complete, authoritative Colab run explicitly postponed).** Branch
+`feat/baseline-120-colab-validation`. Part A: multi-game notebook + real
+per-game RHAE capture, complete. Merged Track 1
+(`origin/feat/baseline-120-backend-wiring`) in at commit `98e6e73`;
+confirmed `select_backend` imports and `gemma_local` resolves with no
+behavior change. Found and fixed a real Cloudflare-WAF bug blocking every
+Cerebras call (missing `User-Agent` header, commit `ebfdaf1`, outside
+this track's originally-scoped files — done with the human owner's
+explicit approval mid-session since it blocked this track's own
+deliverable). Ran a real `cerebras_dev` sweep through the actual harness
+across an 8-game sample (`ls20, vc33, su15, tn36, ka59, lf52, tr87,
+sc25`; 80 real steps/game, 640 decisions total — see "Known failures or
+risks" below for why 80 and not the requested 100): `0.0` aggregate
+score, 0 levels completed everywhere, action patterns matching the
+deterministic/heuristic fallback chain rather than varied model play —
+root-caused to `zerx/policy.py`'s `build_prompt()` never listing the
+actual legal action names in the prompt text, a real prompt-design gap,
+not a broken connection (real API calls succeeded; the model invented
+action names like `"ACTION0"`/`"WAIT"` and every decision fell through to
+fallback). Full suite: **278 passed, 0 failed**. The authoritative Colab
+Gemma-4-31B-it run was **not performed this session** (no tool available
+to any Claude Code session can drive a live Colab GPU runtime — a human
+must run it) — the integration owner's consolidated write-up below
+records the human owner's explicit decision to postpone it further,
+pending two prerequisites. See `docs/superpowers/experiments/baseline-120.md`
+for full detail — conclusion `investigate`, not `keep`/`revert`.
+
 ## Uncommitted or external artifacts
 
 None tracked or required. `.venv/`, `vendor/ARC-AGI-3-Agents/`,
