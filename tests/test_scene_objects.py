@@ -210,3 +210,51 @@ def test_correspond_objects_matches_recolor_in_place_via_overlap_fallback():
 
 def test_find_correspondences_is_the_same_function():
     assert find_correspondences is correspond_objects
+
+
+from zerx.scene import compare_frames, inspect_local_crop, list_salient_objects
+
+
+def test_list_salient_objects_ranks_small_rare_object_first():
+    grid = [
+        [1, 1, 1, 2],
+        [1, 1, 1, 0],
+        [1, 1, 1, 0],
+    ]
+    scene = perceive_scene(_frame(grid))
+    ranked = list_salient_objects(scene)
+    assert ranked[0].color == 2
+
+
+def test_list_salient_objects_empty_scene_returns_empty():
+    assert list_salient_objects(()) == ()
+
+
+def test_compare_frames_reports_no_change_for_identical_scenes():
+    scene = perceive_scene(_frame([[5, 0], [0, 0]]))
+    assert "no_change" in compare_frames(scene, scene)
+
+
+def test_compare_frames_reports_appeared_and_disappeared_counts():
+    before = perceive_scene(_frame([[5, 0], [0, 0]]))
+    after = perceive_scene(_frame([[0, 6], [0, 0]]))
+    summary = compare_frames(before, after)
+    assert "disappeared=1" in summary
+    assert "appeared=1" in summary
+
+
+def test_inspect_local_crop_returns_requested_region_only():
+    grid = [
+        [0, 1, 2],
+        [3, 4, 5],
+        [6, 7, 8],
+    ]
+    text = inspect_local_crop(_frame(grid), (1, 1, 2, 2))
+    assert text == "45\n78"
+
+
+def test_inspect_local_crop_does_not_return_the_full_grid():
+    grid = [[i for i in range(10)] for _ in range(10)]
+    text = inspect_local_crop(_frame(grid), (0, 0, 2, 2))
+    assert len(text.splitlines()) == 3
+    assert all(len(row) == 3 for row in text.splitlines())

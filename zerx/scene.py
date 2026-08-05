@@ -16,6 +16,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
+from zerx.heuristics import size_rarity_scores
 from zerx.perception import LabeledObject, _find_objects
 from zerx.types import GameFrame
 
@@ -408,3 +409,66 @@ def classify_transition(
     if moved:
         return OBJECT_MOVE
     return UNKNOWN_CHANGE
+
+
+def list_salient_objects(scene: Tuple[SceneObject, ...]) -> Tuple[SceneObject, ...]:
+    """Small/rare/high-contrast objects first -- reuses
+    zerx.heuristics.size_rarity_scores (the pure scoring core behind
+    rank_click_candidates) instead of duplicating that formula.
+    """
+    if not scene:
+        return ()
+    sizes = tuple(o.area for o in scene)
+    colors = tuple(o.color for o in scene)
+    scores = size_rarity_scores(sizes, colors)
+    ranked = sorted(zip(scene, scores), key=lambda pair: pair[1], reverse=True)
+    return tuple(obj for obj, _ in ranked)
+
+
+def compare_frames(before: Tuple[SceneObject, ...], after: Tuple[SceneObject, ...]) -> str:
+    """Compact text summary of what changed -- for prompt inclusion, never
+    a full grid dump (STRATEGY.md SS5.5 point 4).
+    """
+    correspondence = correspond_objects(before, after)
+    before_by_id = {o.object_id: o for o in before}
+    after_by_id = {o.object_id: o for o in after}
+    matched_after_ids = {v for v in correspondence.values() if v is not None}
+
+    appeared = [a for a in after if a.object_id not in matched_after_ids]
+    disappeared = [before_by_id[bid] for bid, aid in correspondence.items() if aid is None]
+    moved = 0
+    recolored = 0
+    for bid, aid in correspondence.items():
+        if aid is None:
+            continue
+        b, a = before_by_id[bid], after_by_id[aid]
+        if b.color != a.color:
+            recolored += 1
+        elif b.centroid != a.centroid:
+            moved += 1
+
+    parts = [f"objects_before={len(before)}", f"objects_after={len(after)}"]
+    if appeared:
+        parts.append(f"appeared={len(appeared)}")
+    if disappeared:
+        parts.append(f"disappeared={len(disappeared)}")
+    if moved:
+        parts.append(f"moved={moved}")
+    if recolored:
+        parts.append(f"recolored={recolored}")
+    if len(parts) == 2:
+        parts.append("no_change")
+    return ", ".join(parts)
+
+
+def inspect_local_crop(frame: GameFrame, bbox: Tuple[int, int, int, int]) -> str:
+    """A small region as compact hex-encoded text -- never the full 64x64
+    grid, per STRATEGY.md SS5.5 point 4. Caller supplies a valid in-range
+    bbox; this is an internal analysis helper, not a user-input boundary.
+    """
+    min_x, min_y, max_x, max_y = bbox
+    rows = []
+    for y in range(min_y, max_y + 1):
+        row = frame.grid[y][min_x : max_x + 1]
+        rows.append("".join(f"{cell:x}" if cell < 16 else "?" for cell in row))
+    return "\n".join(rows)
