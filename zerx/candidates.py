@@ -67,3 +67,16 @@ def generate_candidates(
             )
         )
     return candidates
+
+
+def select_best_candidate(candidates: List[Candidate]) -> Optional[Candidate]:
+    """Deterministic selection -- no LLM arbiter. This is what actually
+    gets used when arbiter_on is False (the default, and the only
+    supported mode for this track). Ties break toward the earliest
+    candidate in generation order: Python's max() only replaces its
+    running best on a strictly greater key, so the first item with the
+    maximum score wins.
+    """
+    if not candidates:
+        return None
+    return max(candidates, key=lambda c: c.static_score)

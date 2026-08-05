@@ -66,3 +66,23 @@ def test_generate_candidates_stores_raw_response_and_score():
     candidates = generate_candidates(backend, "prompt", LEGAL, count=1)
     assert candidates[0].raw_response == '{"action": "ACTION1"}'
     assert candidates[0].static_score == 1.0
+
+
+from zerx.candidates import select_best_candidate
+
+
+def test_select_best_candidate_picks_highest_score():
+    parsed = ParsedAction(action=Action(name=ActionName.ACTION1), repaired=False)
+    low = Candidate(raw_response="a", parsed=None, static_score=0.0)
+    high = Candidate(raw_response="b", parsed=parsed, static_score=1.0)
+    assert select_best_candidate([low, high]) is high
+
+
+def test_select_best_candidate_breaks_ties_by_earliest_candidate():
+    first = Candidate(raw_response="a", parsed=None, static_score=0.5)
+    second = Candidate(raw_response="b", parsed=None, static_score=0.5)
+    assert select_best_candidate([first, second]) is first
+
+
+def test_select_best_candidate_empty_list_returns_none():
+    assert select_best_candidate([]) is None
