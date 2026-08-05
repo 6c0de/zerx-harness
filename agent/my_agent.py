@@ -14,6 +14,7 @@ Contract (enforced by the vendored `agents.agent.Agent` ABC):
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import List, Optional, Tuple
 
 # Verified against the vendored arcengine/agents packages
@@ -25,12 +26,13 @@ from arcengine import FrameData, GameAction, GameState
 from agents.agent import Agent
 
 from zerx.config import Config
+from zerx.exact_state_memory import ExactStateMemory, action_signature
 from zerx.heuristics import DeadSignatureTracker
 from zerx.memory import MemoryState
 from zerx.model_backend import GemmaModelBackend
 from zerx.perception import perceive
-from zerx.policy import Decision, decide
-from zerx.transitions import TransitionLedger
+from zerx.policy import Decision, _deterministic_fallback, _FALLBACK_PREFERENCE, decide
+from zerx.transitions import TransitionLedger, grid_hash
 from zerx.types import Action, ActionName, GameFrame
 
 logger = logging.getLogger(__name__)
@@ -138,6 +140,7 @@ class MyAgent(Agent):
         self._dead_signatures = DeadSignatureTracker()
         self._backend = GemmaModelBackend(self._config.model_revision)
         self._transitions = TransitionLedger()
+        self._exact_state_memory = ExactStateMemory()
         self._actions_taken = 0
         self._pending_decision: Optional[Decision] = None
         self._pending_before_frame: Optional[GameFrame] = None
@@ -167,6 +170,21 @@ class MyAgent(Agent):
             if target is not None:
                 self._dead_signatures.record_outcome(target, effective=record.effective)
 
+        # --- baseline-115-exact-state-memory (feat/baseline-115-exact-state-memory) ---
+        if (
+            self._config.exact_state_suppression_on
+            and record is not None
+            and self._pending_decision is not None
+            and self._pending_before_frame is not None
+        ):
+            self._exact_state_memory.record_outcome(
+                state_signature=grid_hash(self._pending_before_frame),
+                action_signature=action_signature(self._pending_decision.action),
+                visible_change=record.changed_pixels > 0,
+                level_delta=record.score_delta,
+            )
+        # --- end baseline-115-exact-state-memory ---
+
         history: Tuple[GameFrame, ...] = tuple(_to_game_frame(f) for f in frames[-4:])
         decision, self._memory = decide(
             frame=frame,
@@ -177,6 +195,29 @@ class MyAgent(Agent):
             backend=self._backend,
             actions_taken=self._actions_taken,
         )
+
+        # --- baseline-115-exact-state-memory (feat/baseline-115-exact-state-memory) ---
+        if self._config.exact_state_suppression_on and self._exact_state_memory.is_suppressed(
+            grid_hash(frame), action_signature(decision.action)
+        ):
+            alternative_names = [
+                name
+                for name in _FALLBACK_PREFERENCE
+                if name in frame.legal_actions and name != decision.action.name
+            ]
+            if alternative_names:
+                name = alternative_names[0]
+                replacement = (
+                    Action(name=name, x=32, y=32) if name == ActionName.ACTION6 else Action(name=name)
+                )
+                decision = replace(
+                    decision,
+                    action=replacement,
+                    source="fallback_exact_state_suppressed",
+                    target_object_label=None,
+                )
+        # --- end baseline-115-exact-state-memory ---
+
         self._actions_taken += 1
 
         self._transitions.begin(frame, decision.action)
