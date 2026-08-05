@@ -86,3 +86,55 @@ def test_select_best_candidate_breaks_ties_by_earliest_candidate():
 
 def test_select_best_candidate_empty_list_returns_none():
     assert select_best_candidate([]) is None
+
+
+from zerx.candidates import select_candidate
+from zerx.config import Config
+
+
+def test_select_candidate_never_calls_arbiter_when_arbiter_on_false():
+    parsed = ParsedAction(action=Action(name=ActionName.ACTION1), repaired=False)
+    candidates = [Candidate(raw_response="a", parsed=parsed, static_score=1.0)]
+    arbiter = FakeModelBackend(responses=["0"])
+    picked = select_candidate(candidates, Config(arbiter_on=False), arbiter=arbiter)
+    assert picked is candidates[0]
+    assert arbiter.call_count == 0
+
+
+def test_select_candidate_never_calls_arbiter_when_none_provided():
+    parsed = ParsedAction(action=Action(name=ActionName.ACTION1), repaired=False)
+    candidates = [Candidate(raw_response="a", parsed=parsed, static_score=1.0)]
+    picked = select_candidate(candidates, Config(arbiter_on=True), arbiter=None)
+    assert picked is candidates[0]
+
+
+def test_select_candidate_consults_arbiter_when_arbiter_on_true():
+    low = Candidate(
+        raw_response="a",
+        parsed=ParsedAction(action=Action(name=ActionName.ACTION5), repaired=False),
+        static_score=1.0,
+    )
+    high = Candidate(
+        raw_response="b",
+        parsed=ParsedAction(action=Action(name=ActionName.ACTION1), repaired=False),
+        static_score=1.0,
+    )
+    arbiter = FakeModelBackend(responses=["1"])
+    picked = select_candidate([low, high], Config(arbiter_on=True), arbiter=arbiter)
+    assert picked is high
+    assert arbiter.call_count == 1
+
+
+def test_select_candidate_falls_back_to_deterministic_when_arbiter_output_invalid():
+    only = Candidate(
+        raw_response="a",
+        parsed=ParsedAction(action=Action(name=ActionName.ACTION1), repaired=False),
+        static_score=1.0,
+    )
+    arbiter = FakeModelBackend(responses=["not an int"])
+    picked = select_candidate([only], Config(arbiter_on=True), arbiter=arbiter)
+    assert picked is only
+
+
+def test_select_candidate_empty_list_returns_none():
+    assert select_candidate([], Config(), arbiter=None) is None

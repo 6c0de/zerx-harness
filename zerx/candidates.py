@@ -80,3 +80,53 @@ def select_best_candidate(candidates: List[Candidate]) -> Optional[Candidate]:
     if not candidates:
         return None
     return max(candidates, key=lambda c: c.static_score)
+
+
+def _build_arbiter_prompt(candidates: List[Candidate]) -> str:
+    lines = "\n".join(
+        f"{i}: {c.raw_response!r} (static_score={c.static_score:.2f})"
+        for i, c in enumerate(candidates)
+    )
+    return (
+        "Multiple candidate actions were generated for the same game state. "
+        "Pick the single best one.\n"
+        f"{lines}\n\n"
+        "Respond with exactly one integer: the index of the best candidate."
+    )
+
+
+def _select_with_arbiter(candidates: List[Candidate], arbiter: ModelBackend) -> Optional[Candidate]:
+    valid = [c for c in candidates if c.parsed is not None]
+    if not valid:
+        return None
+    try:
+        raw = arbiter.generate(_build_arbiter_prompt(valid))
+        index = int(raw.strip())
+    except Exception:
+        return None
+    if 0 <= index < len(valid):
+        return valid[index]
+    return None
+
+
+def select_candidate(
+    candidates: List[Candidate],
+    config: Config,
+    arbiter: Optional[ModelBackend] = None,
+) -> Optional[Candidate]:
+    """Entry point decide() calls (Task 6). Deterministic by default
+    (select_best_candidate). Only consults `arbiter` when
+    config.arbiter_on is True AND an arbiter backend is actually supplied
+    -- both conditions required, so passing an arbiter with the flag off
+    is still a true no-op. STRATEGY.md 3.2: the arbiter is the
+    lowest-priority, most speculative part of this track's scope, so on
+    any arbiter failure (bad output, exception, no valid candidates) this
+    falls back to the deterministic pick rather than raising.
+    """
+    if not candidates:
+        return None
+    if config.arbiter_on and arbiter is not None:
+        picked = _select_with_arbiter(candidates, arbiter)
+        if picked is not None:
+            return picked
+    return select_best_candidate(candidates)
