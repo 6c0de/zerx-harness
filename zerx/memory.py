@@ -165,3 +165,31 @@ def contradict_hypothesis(state: StructuredMemoryState, statement: str) -> Struc
 
     new_working.append(updated)
     return replace(state, working_hypotheses=new_working)
+
+
+def add_open_question(state: StructuredMemoryState, question: str) -> StructuredMemoryState:
+    """Append an open question, deduped by exact text (repeatedly asking
+    the same open question should not bloat the rendered prompt). Never
+    mutates `state`.
+    """
+    if question in state.open_questions:
+        return replace(state)
+    return replace(state, open_questions=list(state.open_questions) + [question])
+
+
+def set_current_goal(state: StructuredMemoryState, goal: str) -> StructuredMemoryState:
+    """Replace the current goal. Never mutates `state`."""
+    return replace(state, current_goal=goal)
+
+
+def set_current_plan(state: StructuredMemoryState, plan) -> StructuredMemoryState:
+    """Replace the current plan. Never mutates `state`."""
+    return replace(state, current_plan=list(plan))
+
+
+def record_notable_failure(state: StructuredMemoryState, failure: str) -> StructuredMemoryState:
+    """Append a notable failure. Not deduped -- a repeated identical
+    failure is itself meaningful signal (STRATEGY.md §3.1's ineffective-
+    action evidence uses repetition the same way). Never mutates `state`.
+    """
+    return replace(state, notable_failures=list(state.notable_failures) + [failure])

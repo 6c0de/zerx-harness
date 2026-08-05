@@ -130,3 +130,40 @@ def test_contradict_hypothesis_does_not_mutate_input():
     )
     contradict_hypothesis(state, "green tile is safe")
     assert state.working_hypotheses[0].contradicting_evidence == 0
+
+
+from zerx.memory import (
+    add_open_question,
+    record_notable_failure,
+    set_current_goal,
+    set_current_plan,
+)
+
+
+def test_add_open_question_appends_and_dedupes():
+    state = StructuredMemoryState()
+    state = add_open_question(state, "what does ACTION3 do")
+    state = add_open_question(state, "what does ACTION3 do")
+    state = add_open_question(state, "is there a timer")
+    assert state.open_questions == ["what does ACTION3 do", "is there a timer"]
+
+
+def test_set_current_goal_replaces_value():
+    state = StructuredMemoryState(current_goal="old goal")
+    new_state = set_current_goal(state, "reach the exit")
+    assert new_state.current_goal == "reach the exit"
+    assert state.current_goal == "old goal"  # input not mutated
+
+
+def test_set_current_plan_replaces_list():
+    state = StructuredMemoryState(current_plan=["old step"])
+    new_state = set_current_plan(state, ["click door", "move right"])
+    assert new_state.current_plan == ["click door", "move right"]
+    assert state.current_plan == ["old step"]  # input not mutated
+
+
+def test_record_notable_failure_appends_without_deduping():
+    state = StructuredMemoryState()
+    state = record_notable_failure(state, "clicked wall, no effect")
+    state = record_notable_failure(state, "clicked wall, no effect")
+    assert state.notable_failures == ["clicked wall, no effect", "clicked wall, no effect"]
