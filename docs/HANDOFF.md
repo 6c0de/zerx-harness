@@ -210,6 +210,39 @@ directly rather than trusting the auto-merge.
    `master` (see "Parallel work split" above) — safe to delete once the
    human owner confirms, not deleted automatically.
 
+## baseline-120 parallel work split — track status
+
+Four tracks validating `baseline-120-reki-core` against real games, per
+`docs/superpowers/plans/parallel-baseline-120/README.md` (added on
+`master` at `220b58e`, one commit ahead of this track's fork point
+`8a8a01ad155227aee6f00a5844d1e1bd9da5f4cb`). Each track appends its own
+status line here — this entry covers Track 3 only; see the other 3
+tracks' own sessions for their status.
+
+**Track 3 — local regression & fallback-loop investigation** (2026-08-05):
+done. Branch `feat/baseline-120-local-regression`, commit `8a8a01ad` base.
+25-game crash-safety sweep: **23 passed, 2 skipped (transient
+`arcade.make()` flakiness on `g50t`/`m0r0` — both passed cleanly on
+immediate retry), 0 failed**, no unhandled exception on any public game
+— measured **1227.51s (20m 27s)** wall-clock (5-step cap/game). Root
+cause: **not one bug, two distinct mechanisms**, neither requiring a fix
+in this track's owned files — games without `ACTION6` (e.g. `ls20`) are
+fully explained by Track 1's already-known missing-backend-wiring issue
+alone (`decide()` never reaches the candidate system, static
+`_deterministic_fallback` always wins); games with `ACTION6` (e.g.
+`vc33`) additionally hit a first empirical confirmation of `STRATEGY.md`
+§5.4's already-documented, already-scoped (`exp-150-duck-tools` Variant
+A) HUD-vs-gameplay-change limitation in `zerx/transitions.py` (unowned
+this round), which defeats `zerx/heuristics.py`'s `DeadSignatureTracker`
+down-ranking on animated-HUD games — `zerx/heuristics.py` itself has no
+defect. Also found and documented (not fixed, out of scope):
+`scripts/play_local.py:114` crashes with `UnicodeEncodeError` on Windows
+non-UTF8 consoles when printing multi-game summaries, which is why this
+session's reproduction of the original `ls20`+`vc33` finding only ever
+completed `vc33` — full writeup:
+`docs/superpowers/plans/2026-08-05-baseline-120-local-regression.md`.
+Full local suite: 288 passed (261 pre-existing + 27 new), 0 failed.
+
 ## Uncommitted or external artifacts
 
 None tracked or required. `.venv/`, `vendor/ARC-AGI-3-Agents/`,
