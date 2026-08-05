@@ -5,21 +5,26 @@ file per handoff under `docs/handoffs/` if the history grows long — not
 needed yet). See `docs/TEAM_WORKFLOW.md` for the 5-day schedule this feeds
 into.
 
-- Updated at: 2026-08-05
-- Current owner: (local session, Claude Code — integration)
-- Next owner: whoever picks `baseline-120-reki-core` validation (see "Exact
-  next action" below) — not auto-started
-- Branch: `master` (all 4 Day 3 parallel tracks merged in, sequentially,
-  via `integration/day3`, per `INTEGRATION.md`)
-- Commit: `f3e9e573498ad58df154be3fe5a5b667f51a6513` (merge of
-  `integration/day3` into `master`, pushed to `origin/master`)
-- Experiment ID: `baseline-100` (recorded, but flagged `investigate` — see
-  `docs/superpowers/experiments/baseline-100.md`, per-game outcome wasn't
-  captured by the notebook, only environment/setup validation)
-- Config ID/hash: n/a — no scored experiment record exists yet
-- Sprint day (1–5): Day 3 complete (4 parallel tracks merged); Day 3's
-  Kaggle compatibility run (per `AGENTS.md`'s 5-day schedule) is still open
-  — see "Exact next action"
+- Updated at: 2026-08-06
+- Current owner: (local session, Claude Code — `baseline-120` integration)
+- Next owner: whoever picks up the two `baseline-120` prerequisites (visualizer,
+  `build_prompt()` legal-actions fix) or the Day 1 Kaggle smoke submission —
+  see "Exact next action" below — not auto-started
+- Branch: `master` (all 4 `baseline-120` tracks merged in, sequentially, via
+  `integration/baseline-120`, per `docs/superpowers/plans/parallel-baseline-120/INTEGRATION.md`)
+- Commit: merge of `integration/baseline-120` into `master`, local only as of
+  this update — **not yet pushed to `origin/master`**, pending explicit
+  human-owner confirmation (see "Exact next action")
+- Experiment ID: `baseline-120` (recorded, flagged `investigate` — see
+  `docs/superpowers/experiments/baseline-120.md`; `baseline-100` remains
+  `investigate` too, unchanged from before, see below)
+- Config ID/hash: n/a for `baseline-120`'s dev-lane sweep — see
+  `docs/superpowers/experiments/baseline-120.md` for the actual config used
+  (`ZERX_BACKEND=cerebras_dev`, `ZERX_MODEL_REVISION=gemma-4-31b`)
+- Sprint day (1–5): still Day 3 by commit-date timeline — `baseline-120`'s
+  infrastructure is complete and its dev-lane signal is in, but the
+  authoritative Colab run is explicitly postponed (see below), and Day 1's
+  Kaggle smoke submission is still open — see "Exact next action"
 
 ## Objective
 
@@ -27,7 +32,10 @@ Day 1 (local-skeleton plan, 15 tasks), Day 2 (Colab Gemma-4-31B load,
 `baseline-100`), and Day 3's 4 parallel tracks (`baseline-115`,
 `baseline-130`, `exp-140`, `exp-150-duck-tools-ab`) are all complete and
 merged into `master`. See "Parallel work split" below for per-track detail
-and the integration record.
+and the integration record. `baseline-120-reki-core`'s own 4-track
+validation is also now merged (infrastructure complete, dev-lane
+investigated, authoritative Colab run explicitly postponed) — see
+"baseline-120-reki-core — integration summary" below.
 
 ## Completed changes (Day 1 + Day 2, now on `master`)
 
@@ -100,6 +108,56 @@ Every new `Config` flag added by the 4 tracks
 merges — verified by grep against `zerx/config.py` after each merge step,
 not just assumed.
 
+**`baseline-120` integration, 2026-08-06** (this update), following
+`docs/superpowers/plans/parallel-baseline-120/INTEGRATION.md`'s merge
+order (smallest/least-invasive first): each of the 4 branches was first
+verified individually green, then merged one at a time into
+`integration/baseline-120`, branched from `master` at `220b58e`:
+
+- Track 3 (`feat/baseline-120-local-regression`) alone: 288 passed.
+- + Track 1 (`feat/baseline-120-backend-wiring`): 297 passed (272 passed,
+  25 deselected with `-m "not slow_local_engine"` for fast iteration).
+- + Track 2 (`feat/baseline-120-eval-harness`): 300 passed (275 passed,
+  25 deselected, fast filter); `tests/test_run_ablation.py`'s real-engine
+  test explicitly re-run and confirmed to now exercise the fixed backend
+  path.
+- + Track 4 (`feat/baseline-120-colab-validation`, which had already
+  merged Track 1 into itself mid-round to build against `select_backend`
+  — its identical commits collapsed cleanly, no duplication): **308
+  passed, 0 failed** — the full, final count (261 pre-`baseline-120` +
+  27 Track 3 + 9 Track 1 + 3 Track 2 + 8 Track 4 net-new [Track 4's own
+  branch added 9 tests to `tests/test_build_colab_notebook.py`/-1 for one
+  superseded single-game test, +1 new Cloudflare-WAF regression test]).
+- Merged into `master` locally: **308 passed, 0 failed**, confirmed again
+  — not yet pushed (see top-of-file "Commit" note).
+
+One notable, expected behavior change in this round: the 25-game
+crash-safety sweep (`tests/test_real_game_regression.py`) ran in
+**~23 minutes** on Track 3's own branch (dominated by repeated
+connection-refused retries against the then-still-hardcoded
+`GemmaModelBackend` pointed at an unreachable `localhost:8000`) but in
+**~20 seconds** once merged alongside Track 1's fix — `Config.backend`
+defaults to `"fake"`, so `select_backend` now constructs
+`FakeModelBackend(responses=[])`, which raises immediately in-process
+with no network I/O. Same assertions (no unhandled exception, reaches a
+terminal state or the step cap), same pass count, just via the fast
+fallback path instead of the slow one — a genuine side effect of Track
+1's fix landing, not a weakened test.
+
+Conflicts across all 4 `baseline-120` merges were exactly what
+`INTEGRATION.md` predicted: mechanical, confined to `docs/HANDOFF.md`
+(every track appending its own status paragraph in the same place),
+resolved by keeping every track's content, never picking one side.
+`zerx/model_backend.py`, `zerx/config.py`, `agent/my_agent.py`, and
+`tests/test_backend_selection.py`/`tests/test_config.py` (all Track
+1-owned this round) merged with **zero conflicts**, confirming the
+ownership matrix held — no other track edited a file it didn't own.
+`grep -n "GemmaModelBackend(self._config.model_revision)"
+agent/my_agent.py` returns nothing post-Track-1-merge, confirming the old
+hardcoded construction is actually gone. `zerx/config.py`'s
+`gemma_base_url` field appears exactly once, defaulting to the original
+hardcoded URL.
+
 ## Colab state
 
 - Account owner: (session owner, human)
@@ -117,9 +175,19 @@ not just assumed.
 
 ## Cerebras development state
 
-Not started. No `CEREBRAS_API_KEY` exists in this environment; no live
-Cerebras call has ever been made — every `zerx/backends/cerebras_dev.py`
-test injects a fake `http_post` or a literal string.
+No `CEREBRAS_API_KEY` exists in **this Claude Code session's own tool
+environment** — every `zerx/backends/cerebras_dev.py` test still injects a
+fake `http_post` or a literal string, and this remains true after
+`baseline-120`. However, a live Cerebras call **has now been made**, by
+the human owner directly, in their own terminal (separate process, own
+credential — never shared with this session, per `AGENTS.md`'s
+credential-isolation rule): Track 4's dev-lane sweep (2026-08-06), 640+
+real `gemma-4-31b` calls across 8 games, no rate-limit failures observed.
+That run also found and fixed a real Cloudflare-WAF bug (default
+`urllib` User-Agent triggering an HTTP 403/error-1010 block, unrelated to
+credentials) — see "Known failures or risks" below, item 2's updated
+wording, and `docs/superpowers/experiments/baseline-120.md` for full
+detail.
 
 ## Kaggle state
 
@@ -139,7 +207,12 @@ parallel tracks below (none of them touch Kaggle).
    instead of hardcoding `GemmaModelBackend`. See
    `docs/superpowers/plans/2026-08-05-baseline-120-backend-wiring.md`.
 2. No true rate-limit backoff in `CerebrasDevBackend.generate()`'s retry
-   loop — inert until a live Cerebras test exists.
+   loop. **Updated 2026-08-06:** a live Cerebras test now exists (Track
+   4's `baseline-120` dev-lane sweep — 640+ real calls across 8 games,
+   2026-08-06) and hit no rate-limit failures, so this is no longer
+   purely theoretical exposure — but the backoff gap itself remains
+   unaddressed; this item stays open until backoff is actually
+   implemented and tested.
 3. `parse_action(None, ...)` raises `AttributeError`, inert because
    `decide()` wraps the only real call site in `try/except Exception`.
 4. `history` is computed in `agent/my_agent.py` and passed to
@@ -147,6 +220,41 @@ parallel tracks below (none of them touch Kaggle).
    interface stability for future movement-delta perception.
 5. `baseline-100`'s per-game outcome wasn't captured (see Colab state
    above) — small, independent follow-up.
+6. **`zerx/policy.py`'s `build_prompt()` never lists the actual legal
+   action names in the prompt text** — only a literal `<ACTION_NAME>`
+   placeholder — confirmed root cause of `baseline-120`'s dev-lane sweep
+   flat `0.0` result (Track 4, 2026-08-06): real `gemma-4-31b` calls
+   succeeded (HTTP 200, real reasoning attempted), but the model invented
+   invalid action names (`"ACTION0"`, `"WAIT"`) with no way to know the
+   real vocabulary, so every decision fell through to the
+   deterministic/heuristic fallback chain — indistinguishable from the
+   pre-existing missing-backend "before" reference by symptom alone
+   (dominant single action per game), even though the underlying cause
+   this time is a prompt-design gap, not a broken connection. Fix
+   candidate: add a `legal_actions` parameter to `build_prompt()`'s
+   signature, render them in the prompt text, re-run the same 8-game
+   sweep. See `docs/superpowers/experiments/baseline-120.md` for full
+   detail.
+7. **`scripts/play_local.py`'s `MyAgentCls.MAX_ACTIONS = min(MyAgentCls.MAX_ACTIONS,
+   args.max_steps)` can only ever *lower* the step cap**, never raise it
+   above `MyAgentCls`'s existing default (80, inherited from the vendored
+   base `agents.agent.Agent` class) — confirmed by Track 4's dev-lane
+   sweep (2026-08-06): `--max-steps 100` silently capped the run at 80
+   steps/game, not 100. Recorded as the actual, accurate step count in
+   `docs/superpowers/experiments/baseline-120.md` rather than the
+   originally intended one; not fixed (`scripts/play_local.py` unowned
+   this round).
+8. **`scripts/play_local.py:114` crashes with `UnicodeEncodeError` on
+   Windows non-UTF8 consoles** when printing multi-game summaries — the
+   final per-game summary line hardcodes a `→` character that the
+   Windows `cp1254` console codepage cannot encode, so the script's loop
+   over games terminates via an uncaught exception right after the first
+   game. Confirmed by Track 3 (2026-08-05): this is why that track's own
+   reproduction of the original `ls20`+`vc33` finding only ever completed
+   `vc33` — `ls20` never actually ran in that reproduction. Track 3's own
+   sweep drives `MyAgent` directly rather than through this script, so it
+   was not exposed to the crash; not fixed (out of scope for all
+   `baseline-120` tracks).
 
 ## Parallel work split (Day 3, starting 2026-08-05)
 
@@ -192,113 +300,169 @@ directly rather than trusting the auto-merge.
 
 ## Exact next action
 
-1. Per `STRATEGY.md` §7's ladder, the natural next step is validating
-   `baseline-120-reki-core` (reflection + click proposals + soft failure
-   memory) against real games — everything built in the 4 merged tracks
-   is currently local, model-free, and unwired/off-by-default; no track
-   has yet been exercised against an actual game. This is a
-   recommendation for the human owner to schedule, not something this
-   session is starting automatically. A full 4-track implementation and
-   integration plan for this exact step — including an empirically
-   confirmed finding that `agent/my_agent.py` currently hardcodes
-   `GemmaModelBackend` regardless of `Config.backend`, so no real model
-   reasoning has ever run against a local game yet (`0.0` aggregate
-   score, `0` levels completed, `ls20`+`vc33`, 50 steps each) — is written
-   up at `docs/superpowers/plans/parallel-baseline-120/README.md`.
-2. Kaggle Day 1 smoke submission is still open — get explicit approval
-   before running it, independent of the parallel tracks.
-3. `baseline-100`'s results-capture gap (see Colab state above) — small,
-   pick it up whenever convenient.
-4. The 4 `feat/...` branches used for Day 3 are fully merged into
-   `master` (see "Parallel work split" above) — safe to delete once the
-   human owner confirms, not deleted automatically.
+**`baseline-120` is not yet pushed to `origin/master`** — that push, and
+any `STRATEGY.md` edit, require explicit human-owner confirmation before
+this session proceeds (see top-of-file "Commit" note). Once confirmed and
+pushed, this is the priority-ordered list of what's actually next; none
+of the items below are started, all are recommendations for the human
+owner to schedule:
 
-## baseline-120 parallel work split — track status
+1. **`baseline-120`'s own next steps, in the human owner's stated order**
+   (see "Colab run — explicitly postponed" below for the full reasoning):
+   (a) build the visualizer (reference:
+   [github.com/Darkosxl/Agent_Harness_Example](https://github.com/Darkosxl/Agent_Harness_Example)
+   — pygame grid + scrollable reasoning panel, pause/step-back-forward
+   through a capped history buffer); (b) fix `zerx/policy.py`'s
+   `build_prompt()` to include `legal_actions` in the prompt text (see
+   "Known failures or risks" item 6); (c) only then re-run the dev-lane
+   sweep and/or the authoritative Colab Gemma-4-31B-it run and write the
+   real `keep`/`revert`/`investigate` verdict into `STRATEGY.md` §7 — the
+   one `STRATEGY.md` edit this whole `baseline-120` effort authorizes,
+   and only after that real number exists.
+2. **A general `README.md`** documenting project usage — none exists yet;
+   recommended by the human owner as a near-term, low-risk documentation
+   gap, independent of the items above.
+3. **A personal `ARC_API_KEY`** (separate from `CEREBRAS_API_KEY`) so
+   local runs attribute to the human owner's account on
+   `three.arcprize.org`'s web dashboard instead of an anonymous one —
+   complements the visualizer (item 1a), doesn't change how anything
+   runs locally. Recommended by the human owner, not started.
+4. **A JSON-like export of played games**, for later offline inspection —
+   per-game (or per-step) structured data including each decision's
+   reasoning/raw model output, not just the final parsed action (today's
+   `Decision` dataclass in `zerx/policy.py` and `ExperimentRecord` in
+   `eval/run_ablation.py` both discard the raw model response once
+   parsed). Recommended by the human owner as the natural data source for
+   the visualizer's replay buffer too (same underlying trace, consumed
+   either live or from a saved file) — worth designing together with item
+   1a rather than as two unrelated features. Not started.
+5. Kaggle Day 1 smoke submission is still open — get explicit approval
+   before running it, independent of everything above.
+6. `baseline-100`'s results-capture gap is now closed going forward by
+   Track 4's Part A notebook rewrite (see "Tests executed and results"
+   above) — no further action needed for that specific gap; a fresh Colab
+   run would exercise the fix.
+7. The 4 `feat/baseline-120-*` branches are fully merged into
+   `integration/baseline-120` → `master` (locally) — safe to delete once
+   the human owner confirms, not deleted automatically. Same standing
+   offer for the 4 `feat/...` branches used for Day 3, already merged.
 
-Four tracks validating `baseline-120-reki-core` against real games, per
-`docs/superpowers/plans/parallel-baseline-120/README.md` (added on
-`master` at `220b58e`, one commit ahead of this track's fork point
-`8a8a01ad155227aee6f00a5844d1e1bd9da5f4cb`). Each track appends its own
-status line here — the integration owner does the final consolidated
-rewrite once all 4 are merged (see below).
+## baseline-120-reki-core — integration summary (consolidated 2026-08-06)
 
-**Track 3 — local regression & fallback-loop investigation** (2026-08-05):
-done. Branch `feat/baseline-120-local-regression`, commit `8a8a01ad` base.
-25-game crash-safety sweep: **23 passed, 2 skipped (transient
-`arcade.make()` flakiness on `g50t`/`m0r0` — both passed cleanly on
-immediate retry), 0 failed**, no unhandled exception on any public game
-— measured **1227.51s (20m 27s)** wall-clock (5-step cap/game). Root
-cause: **not one bug, two distinct mechanisms**, neither requiring a fix
-in this track's owned files — games without `ACTION6` (e.g. `ls20`) are
-fully explained by Track 1's already-known missing-backend-wiring issue
-alone (`decide()` never reaches the candidate system, static
-`_deterministic_fallback` always wins); games with `ACTION6` (e.g.
-`vc33`) additionally hit a first empirical confirmation of `STRATEGY.md`
-§5.4's already-documented, already-scoped (`exp-150-duck-tools` Variant
-A) HUD-vs-gameplay-change limitation in `zerx/transitions.py` (unowned
-this round), which defeats `zerx/heuristics.py`'s `DeadSignatureTracker`
-down-ranking on animated-HUD games — `zerx/heuristics.py` itself has no
-defect. Also found and documented (not fixed, out of scope):
-`scripts/play_local.py:114` crashes with `UnicodeEncodeError` on Windows
-non-UTF8 consoles when printing multi-game summaries, which is why this
-session's reproduction of the original `ls20`+`vc33` finding only ever
-completed `vc33` — full writeup:
-`docs/superpowers/plans/2026-08-05-baseline-120-local-regression.md`.
-Full local suite: 288 passed (261 pre-existing + 27 new), 0 failed.
+**Status: infrastructure complete, dev-lane investigated, Colab run
+explicitly postponed.** This is not a finished `baseline-120` result —
+per `STRATEGY.md` §7.1, only a real Colab Gemma-4-31B-it run can support
+a `keep`/`revert`/`investigate` conclusion for the ladder entry itself,
+and that run has not happened yet (see "Colab run — explicitly
+postponed" below). What *is* true and complete: all 4 tracks per
+`docs/superpowers/plans/parallel-baseline-120/README.md` merged into
+`master` (locally; not yet pushed), full suite green (308 passed, 0
+failed — see "Tests executed and results" above), and a real, working
+dev-lane proxy signal exists for the first time.
 
-**Track 1 (backend selection wiring) — done.** Branch
-`feat/baseline-120-backend-wiring`, commit `dd74268` (plus a pending
-docs commit updating this file). `select_backend(config: Config) ->
-ModelBackend` added to `zerx/model_backend.py`, matching the frozen
-interface in `docs/superpowers/plans/parallel-baseline-120/README.md`
-exactly. Full suite: 270 passed, 0 failed (261 base + 9 new: 2 config, 7
-backend selection). See
-`docs/superpowers/plans/2026-08-05-baseline-120-backend-wiring.md`.
+**What each track delivered, now merged:**
 
-**Track 2 (real-game eval harness) — done.** Branch
-`feat/baseline-120-eval-harness`, 2026-08-05. `eval/run_ablation.py`
-gained `run_games(config, game_ids, max_steps=200)`, implemented against
-`FakeModelBackend` (Track 1's `select_backend` not yet merged at the time
-this track wrote its code — no functional dependency, per the plan). 3
-new tests added, full suite 264 passed, 0 failed. `rhae` design decision:
-`None` when the game's `EnvironmentScore.message` is set (no
-baseline-actions data for that game), distinct from a genuine `0.0` —
-`ls20` observed with `rhae=None` at 5-step cap in this track's own test
-run. See `docs/superpowers/plans/2026-08-05-baseline-120-eval-harness.md`.
+- **Track 1 (backend selection wiring):** `select_backend(config:
+  Config) -> ModelBackend` added to `zerx/model_backend.py`, matching the
+  frozen interface exactly. `agent/my_agent.py`'s `MyAgent.__init__` now
+  calls it instead of hardcoding `GemmaModelBackend` — the exact bug this
+  plan's README originally measured (`0.0` aggregate score, 0 levels
+  completed, all-`ACTION6`, `ls20`+`vc33`) is fixed. New `Config.gemma_base_url`
+  field, defaulting to the original hardcoded URL (no behavior change for
+  `gemma_local`). See `docs/superpowers/plans/2026-08-05-baseline-120-backend-wiring.md`.
+- **Track 2 (real-game eval harness):** `run_games(config, game_ids,
+  max_steps=200) -> List[ExperimentRecord]` added to
+  `eval/run_ablation.py`, matching the frozen interface exactly; its
+  real-engine integration test now exercises the actual fixed backend
+  path (confirmed by explicit re-run after Track 1 merged). See
+  `docs/superpowers/plans/2026-08-05-baseline-120-eval-harness.md`.
+- **Track 3 (local regression & fallback-loop investigation):** full
+  25-game crash-safety sweep (previously only `ls20`+`vc33` had ever been
+  checked) — 23 passed, 2 transient skips (both passed on immediate
+  retry), 0 failed, no unhandled exception on any public game. Root-caused
+  the original stuck-action-loop report to **two distinct, pre-existing
+  mechanisms** (missing backend wiring for `ACTION6`-less games; a
+  HUD-vs-gameplay-change blind spot in `zerx/transitions.py`'s whole-grid
+  diff for `ACTION6`-legal games, already documented as `exp-150-duck-tools`
+  Variant A scope) — neither required a fix in this track's owned files.
+  Also found (not fixed, out of scope) the `scripts/play_local.py:114`
+  Windows Unicode crash — see "Known failures or risks" item 8. See
+  `docs/superpowers/plans/2026-08-05-baseline-120-local-regression.md`.
+- **Track 4 (Colab validation), Part A — complete:** `scripts/build_colab_notebook.py`'s
+  `smoke_game_cell`/`save_results_cell` rewritten for a real in-process
+  multi-game loop with real per-game RHAE capture (closing
+  `baseline-100`'s results-capture gap for future runs). Found and fixed
+  a real Cloudflare-WAF bug blocking every Cerebras call (default
+  `urllib` User-Agent triggering HTTP 403/error-1010 — commit `ebfdaf1`,
+  outside this track's originally-scoped files, done with the human
+  owner's explicit approval mid-session since it blocked this track's own
+  deliverable; confirmed no other track touched
+  `zerx/backends/cerebras_dev.py` or `tests/test_cerebras_dev.py` this
+  round). **Track 4, Part B — real, but deliberately partial (a
+  sequencing decision, not an incomplete result):** ran a real
+  `cerebras_dev` sweep through the actual harness — 8 games (`ls20, vc33,
+  su15, tn36, ka59, lf52, tr87, sc25`), 80 real steps/game (see "Known
+  failures or risks" item 7 for why 80 not the requested 100), 640 real
+  model-in-loop decisions total, against the actual `agent/my_agent.py`/
+  `decide()` loop with a genuinely reachable model. Result: `0.0`
+  aggregate score, 0 levels completed everywhere — numerically identical
+  to the pre-existing missing-backend "before" reference, but this time
+  root-caused to a genuinely different, fixable cause: `build_prompt()`
+  never lists the legal action vocabulary, so the model invents invalid
+  action names and every decision falls through to fallback (see "Known
+  failures or risks" item 6). Conclusion in
+  `docs/superpowers/experiments/baseline-120.md`: **`investigate`** — not
+  `keep` (behavior is indistinguishable from the fallback-only reference)
+  and not `revert` (the loop's real reasoning path was never actually
+  exercised, given the prompt gap — nothing substantive to revert). The
+  **authoritative Colab Gemma-4-31B-it run was not performed** this
+  round — see immediately below.
 
-**Track 4 (Colab validation) — Part A done, Part B partial (dev-lane
-complete, authoritative Colab run explicitly postponed).** Branch
-`feat/baseline-120-colab-validation`. Part A: multi-game notebook + real
-per-game RHAE capture, complete. Merged Track 1
-(`origin/feat/baseline-120-backend-wiring`) in at commit `98e6e73`;
-confirmed `select_backend` imports and `gemma_local` resolves with no
-behavior change. Found and fixed a real Cloudflare-WAF bug blocking every
-Cerebras call (missing `User-Agent` header, commit `ebfdaf1`, outside
-this track's originally-scoped files — done with the human owner's
-explicit approval mid-session since it blocked this track's own
-deliverable). Ran a real `cerebras_dev` sweep through the actual harness
-across an 8-game sample (`ls20, vc33, su15, tn36, ka59, lf52, tr87,
-sc25`; 80 real steps/game, 640 decisions total — see "Known failures or
-risks" below for why 80 and not the requested 100): `0.0` aggregate
-score, 0 levels completed everywhere, action patterns matching the
-deterministic/heuristic fallback chain rather than varied model play —
-root-caused to `zerx/policy.py`'s `build_prompt()` never listing the
-actual legal action names in the prompt text, a real prompt-design gap,
-not a broken connection (real API calls succeeded; the model invented
-action names like `"ACTION0"`/`"WAIT"` and every decision fell through to
-fallback). Full suite: **278 passed, 0 failed**. The authoritative Colab
-Gemma-4-31B-it run was **not performed this session** (no tool available
-to any Claude Code session can drive a live Colab GPU runtime — a human
-must run it) — the integration owner's consolidated write-up below
-records the human owner's explicit decision to postpone it further,
-pending two prerequisites. See `docs/superpowers/experiments/baseline-120.md`
-for full detail — conclusion `investigate`, not `keep`/`revert`.
+### Colab run — explicitly postponed (human owner's decision, recorded here per `INTEGRATION.md`'s precondition)
+
+The human owner explicitly decided that the authoritative Colab
+Gemma-4-31B-it run for `baseline-120` should happen **after** two things
+land on `master`, not now, for a specific reason: right now the only way
+to tell whether a Cerebras (or, later, Gemma) call actually reasoned or
+silently fell back to the deterministic/heuristic chain is indirect —
+inferring it from repetitive action-count patterns in a text log, which
+is exactly what Track 4's dev-lane sweep above had to do, since no
+per-step `Decision.source` logging or visual trace exists yet. That
+inference method is slow and fragile. The two prerequisites, in the human
+owner's own stated order:
+
+1. **A visualizer should land first** — reference:
+   [github.com/Darkosxl/Agent_Harness_Example](https://github.com/Darkosxl/Agent_Harness_Example),
+   a pygame-based live replay viewer: render the grid plus a scrollable
+   reasoning-text panel per step, with pause/step-back-forward through a
+   capped history buffer, so a human can directly watch or replay each
+   decision instead of reconstructing it from aggregate logs after the
+   fact.
+2. **The `build_prompt()` legal-actions gap should be fixed** (see
+   "Known failures or risks" item 6) — this is what's actually needed
+   for a non-fallback result in the first place. Re-running the Colab
+   sweep before fixing it would very likely just reproduce the same
+   fallback-dominated `0.0` result the dev-lane sweep already produced.
+
+Neither of these is implemented as part of this integration — both are
+recorded as recommendations under "Exact next action" above, not started.
+Per `docs/superpowers/plans/parallel-baseline-120/INTEGRATION.md`'s own
+precondition ("if the human owner explicitly decides to land the
+infrastructure now and run the experiment in a follow-up session, that
+decision must be stated explicitly in `docs/HANDOFF.md`, not implied"):
+this section is that explicit statement. `STRATEGY.md` is **not** edited
+this round — no `keep`/`revert`/`investigate` verdict is written into its
+§7 ladder table until the real Colab number exists; the Cerebras dev-lane
+result stays a labeled proxy only, per `AGENTS.md`/`STRATEGY.md`'s hard
+backend-mismatch rule.
 
 ## Uncommitted or external artifacts
 
 None tracked or required. `.venv/`, `vendor/ARC-AGI-3-Agents/`,
 `environment_files/`, `notebooks/*.ipynb`, and `.superpowers/` (SDD
 session ledger/briefs/reports) all exist locally and are gitignored — not
-source of truth. No credentials of any kind exist in this environment (no
-`CEREBRAS_API_KEY`, no Kaggle token) — every test that would need one
-injects a fake instead.
+source of truth. No credentials of any kind exist in **this Claude Code
+session's own tool environment** (no `CEREBRAS_API_KEY`, no Kaggle token)
+— every test that would need one injects a fake instead; see "Cerebras
+development state" above for the one nuance (a live key now exists in the
+human owner's own terminal, never shared with this session).
