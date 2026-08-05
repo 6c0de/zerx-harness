@@ -76,3 +76,18 @@ def test_rejects_non_positive_budget_soft_cap():
 def test_from_env_rejects_non_positive_budget_soft_cap():
     with pytest.raises(ValueError):
         Config.from_env({"ZERX_BUDGET_SOFT_CAP": "0"})
+
+
+def test_default_exact_state_suppression_is_off():
+    cfg = Config()
+    assert cfg.exact_state_suppression_on is False
+
+
+def test_from_env_overrides_exact_state_suppression_on():
+    cfg = Config.from_env({"ZERX_EXACT_STATE_SUPPRESSION_ON": "true"})
+    assert cfg.exact_state_suppression_on is True
+
+
+def test_from_env_missing_exact_state_suppression_keeps_default():
+    cfg = Config.from_env({})
+    assert cfg.exact_state_suppression_on is False
