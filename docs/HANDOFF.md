@@ -195,7 +195,13 @@ directly rather than trusting the auto-merge.
    is currently local, model-free, and unwired/off-by-default; no track
    has yet been exercised against an actual game. This is a
    recommendation for the human owner to schedule, not something this
-   session is starting automatically.
+   session is starting automatically. A full 4-track implementation and
+   integration plan for this exact step — including an empirically
+   confirmed finding that `agent/my_agent.py` currently hardcodes
+   `GemmaModelBackend` regardless of `Config.backend`, so no real model
+   reasoning has ever run against a local game yet (`0.0` aggregate
+   score, `0` levels completed, `ls20`+`vc33`, 50 steps each) — is written
+   up at `docs/superpowers/plans/parallel-baseline-120/README.md`.
 2. Kaggle Day 1 smoke submission is still open — get explicit approval
    before running it, independent of the parallel tracks.
 3. `baseline-100`'s results-capture gap (see Colab state above) — small,
