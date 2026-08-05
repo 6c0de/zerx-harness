@@ -107,3 +107,20 @@ def test_game_over_is_terminal_regardless_of_diff():
     before = [[0, 0], [0, 0]]
     after = [[0, 0], [0, 0]]
     assert _classify(before, after, terminal=True, width=2, height=2) == "TERMINAL"
+
+
+def test_low_confidence_fallback_match_with_color_change_is_appear_disappear_not_recolor():
+    # a matched pair with a real color change but weak positional overlap
+    # (the fallback tier's least-bad guess, not a confident correspondence)
+    # must not be trusted as "the same object, just recolored."
+    before = [
+        [0, 0, 0],
+        [0, 5, 0],
+        [0, 0, 0],
+    ]
+    after = [
+        [8, 8, 8],
+        [8, 0, 8],
+        [8, 8, 8],
+    ]
+    assert _classify(before, after, width=3, height=3) == "OBJECT_APPEAR_DISAPPEAR"

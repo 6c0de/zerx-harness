@@ -378,9 +378,12 @@ def classify_transition(
         b, a = before_by_id[bid], after_by_id[aid]
         color_changed = b.color != a.color
         shape_changed = b.shape_hash != a.shape_hash and not color_changed
-        # If both color AND area changed significantly, likely disappear/appear not recolor
-        area_ratio = max(b.area, a.area) / min(b.area, a.area) if min(b.area, a.area) > 0 else float('inf')
-        if color_changed and area_ratio > 3:
+        if color_changed and _bbox_overlap_ratio(b.bbox, a.bbox) < 0.5:
+            # A color change paired with weak positional overlap usually
+            # means correspond_objects's fallback tier grabbed the least-bad
+            # available candidate, not a genuine recolor-in-place -- treat
+            # it as one object disappearing and a different one appearing
+            # rather than trusting a low-confidence "same object" claim.
             disappeared.append(b)
             appeared.append(a)
         elif color_changed or shape_changed:
