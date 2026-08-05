@@ -14,6 +14,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Protocol
 
+from zerx.backends.cerebras_dev import CerebrasDevBackend
+from zerx.config import Config
+
 
 class ModelBackend(Protocol):
     def generate(self, prompt: str) -> str:
@@ -102,3 +105,23 @@ class GemmaModelBackend:
                 last_error = exc
         assert last_error is not None
         raise last_error
+
+
+def select_backend(config: Config) -> ModelBackend:
+    """Construct the ModelBackend named by config.backend
+    ('fake' | 'cerebras_dev' | 'gemma_local' | 'gemma_kaggle'),
+    forwarding config.platform to CerebrasDevBackend so its existing
+    platform=='kaggle' lockout applies. Raises ValueError for any other
+    backend string. 'fake' returns FakeModelBackend() with an empty
+    responses list (deliberate: every call raises, exercising the
+    fallback chain) -- not a general-purpose scripted-response
+    constructor; callers who need scripted responses still construct
+    FakeModelBackend(responses=[...]) directly.
+    """
+    if config.backend == "fake":
+        return FakeModelBackend()
+    if config.backend in ("gemma_local", "gemma_kaggle"):
+        return GemmaModelBackend(config.model_revision, base_url=config.gemma_base_url)
+    if config.backend == "cerebras_dev":
+        return CerebrasDevBackend(model_id=config.model_revision, platform=config.platform)
+    raise ValueError(f"Unknown backend: {config.backend!r}")
