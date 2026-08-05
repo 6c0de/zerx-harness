@@ -132,6 +132,50 @@ def test_contradict_hypothesis_does_not_mutate_input():
     assert state.working_hypotheses[0].contradicting_evidence == 0
 
 
+def test_contradict_hypothesis_preserves_working_hypotheses_order():
+    state = StructuredMemoryState(
+        working_hypotheses=[
+            Hypothesis(statement="A", supporting_evidence=5),
+            Hypothesis(statement="B", supporting_evidence=5),
+            Hypothesis(statement="C", supporting_evidence=5),
+        ]
+    )
+    new_state = contradict_hypothesis(state, "B")
+    assert [h.statement for h in new_state.working_hypotheses] == ["A", "B", "C"]
+
+
+def test_confirm_hypothesis_removes_matching_statement_from_rejected_hypotheses():
+    state = StructuredMemoryState(rejected_hypotheses=[Hypothesis(statement="X", supporting_evidence=1, contradicting_evidence=1)])
+    new_state = confirm_hypothesis(state, "X")
+    assert new_state.rejected_hypotheses == []
+    assert len(new_state.confirmed_rules) == 1
+    assert new_state.confirmed_rules[0].statement == "X"
+
+
+def test_record_hypothesis_after_rejection_clears_the_rejected_duplicate():
+    state = StructuredMemoryState()
+    state = record_hypothesis(state, "X")
+    state = contradict_hypothesis(state, "X")
+    assert state.rejected_hypotheses == [Hypothesis(statement="X", supporting_evidence=1, contradicting_evidence=1)]
+    assert state.working_hypotheses == []
+
+    state = record_hypothesis(state, "X")
+    assert state.rejected_hypotheses == []
+    assert len(state.working_hypotheses) == 1
+    assert state.working_hypotheses[0].statement == "X"
+    assert state.working_hypotheses[0].supporting_evidence == 1
+    assert state.working_hypotheses[0].contradicting_evidence == 0
+
+
+def test_repeated_record_contradict_cycles_never_duplicate_rejected_hypotheses():
+    state = StructuredMemoryState()
+    for _ in range(3):
+        state = record_hypothesis(state, "X")
+        state = contradict_hypothesis(state, "X")
+    assert state.rejected_hypotheses == [Hypothesis(statement="X", supporting_evidence=1, contradicting_evidence=1)]
+    assert state.working_hypotheses == []
+
+
 from zerx.memory import (
     add_open_question,
     maybe_refresh_structured,
@@ -194,6 +238,7 @@ def test_render_for_prompt_includes_populated_fields():
     assert "key opens door" in text and "3" in text
     assert "green tile is safe" in text and "support=2" in text and "contradict=1" in text
     assert "red tile is safe" in text
+    assert "support=1" in text and "contradict=2" in text
     assert "what does ACTION3 do" in text
     assert "reach the exit" in text
     assert "click door" in text and "move right" in text

@@ -76,13 +76,13 @@ class StructuredMemoryState:
     is untouched and remains the baseline free-text memory.
     """
 
-    confirmed_rules: list = field(default_factory=list)
-    working_hypotheses: list = field(default_factory=list)
-    rejected_hypotheses: list = field(default_factory=list)
-    open_questions: list = field(default_factory=list)
+    confirmed_rules: list[ConfirmedRule] = field(default_factory=list)
+    working_hypotheses: list[Hypothesis] = field(default_factory=list)
+    rejected_hypotheses: list[Hypothesis] = field(default_factory=list)
+    open_questions: list[str] = field(default_factory=list)
     current_goal: str = ""
-    current_plan: list = field(default_factory=list)
-    notable_failures: list = field(default_factory=list)
+    current_plan: list[str] = field(default_factory=list)
+    notable_failures: list[str] = field(default_factory=list)
     step_count: int = 0
     last_refreshed_step: int = 0
 
@@ -104,7 +104,10 @@ class StructuredMemoryState:
 def record_hypothesis(state: StructuredMemoryState, statement: str) -> StructuredMemoryState:
     """Add a new working hypothesis, or -- if this exact statement is
     already tracked -- increment its supporting evidence instead of
-    duplicating it. Never mutates `state`.
+    duplicating it. A statement being (re-)recorded is no longer a
+    rejected hypothesis -- this is a fresh trial, so it is also cleared
+    from rejected_hypotheses (without carrying its old contradicting
+    evidence forward). Never mutates `state`.
     """
     existing = [h for h in state.working_hypotheses if h.statement == statement]
     if existing:
@@ -116,7 +119,8 @@ def record_hypothesis(state: StructuredMemoryState, statement: str) -> Structure
         new_working = [updated if h.statement == statement else h for h in state.working_hypotheses]
     else:
         new_working = list(state.working_hypotheses) + [Hypothesis(statement=statement)]
-    return replace(state, working_hypotheses=new_working)
+    new_rejected = [h for h in state.rejected_hypotheses if h.statement != statement]
+    return replace(state, working_hypotheses=new_working, rejected_hypotheses=new_rejected)
 
 
 def confirm_hypothesis(state: StructuredMemoryState, statement: str) -> StructuredMemoryState:
@@ -124,11 +128,15 @@ def confirm_hypothesis(state: StructuredMemoryState, statement: str) -> Structur
     count forward), or -- if it was never tracked as a hypothesis -- confirm
     it directly with evidence_count=1. Deduplicates against an already
     confirmed rule with the same statement by bumping its evidence_count.
-    Never mutates `state`.
+    A statement being confirmed can no longer also be a rejected
+    hypothesis, so it is cleared from rejected_hypotheses too -- a
+    statement lives in at most one of working/confirmed/rejected at a
+    time. Never mutates `state`.
     """
     matching = [h for h in state.working_hypotheses if h.statement == statement]
     evidence_count = matching[0].supporting_evidence if matching else 1
     new_working = [h for h in state.working_hypotheses if h.statement != statement]
+    new_rejected = [h for h in state.rejected_hypotheses if h.statement != statement]
 
     already_confirmed = [r for r in state.confirmed_rules if r.statement == statement]
     if already_confirmed:
@@ -137,15 +145,16 @@ def confirm_hypothesis(state: StructuredMemoryState, statement: str) -> Structur
     else:
         new_confirmed = list(state.confirmed_rules) + [ConfirmedRule(statement=statement, evidence_count=evidence_count)]
 
-    return replace(state, working_hypotheses=new_working, confirmed_rules=new_confirmed)
+    return replace(state, working_hypotheses=new_working, confirmed_rules=new_confirmed, rejected_hypotheses=new_rejected)
 
 
 def contradict_hypothesis(state: StructuredMemoryState, statement: str) -> StructuredMemoryState:
     """Increment a working hypothesis's contradicting evidence; the moment
-    contradicting_evidence exceeds supporting_evidence, this is a belief
-    reversal -- move it from working_hypotheses to rejected_hypotheses
-    (STRATEGY.md §7's promotion metric). A statement not currently tracked
-    as a working hypothesis is a no-op. Never mutates `state`.
+    contradicting_evidence reaches or exceeds supporting_evidence, this is
+    a belief reversal -- move it from working_hypotheses to
+    rejected_hypotheses (STRATEGY.md §7's promotion metric). A statement
+    not currently tracked as a working hypothesis is a no-op. Never
+    mutates `state`.
     """
     matching = [h for h in state.working_hypotheses if h.statement == statement]
     if not matching:
@@ -157,13 +166,13 @@ def contradict_hypothesis(state: StructuredMemoryState, statement: str) -> Struc
         supporting_evidence=current.supporting_evidence,
         contradicting_evidence=current.contradicting_evidence + 1,
     )
-    new_working = [h for h in state.working_hypotheses if h.statement != statement]
 
     if updated.contradicting_evidence >= updated.supporting_evidence:
+        new_working = [h for h in state.working_hypotheses if h.statement != statement]
         new_rejected = list(state.rejected_hypotheses) + [updated]
         return replace(state, working_hypotheses=new_working, rejected_hypotheses=new_rejected)
 
-    new_working.append(updated)
+    new_working = [updated if h.statement == statement else h for h in state.working_hypotheses]
     return replace(state, working_hypotheses=new_working)
 
 
@@ -182,7 +191,7 @@ def set_current_goal(state: StructuredMemoryState, goal: str) -> StructuredMemor
     return replace(state, current_goal=goal)
 
 
-def set_current_plan(state: StructuredMemoryState, plan) -> StructuredMemoryState:
+def set_current_plan(state: StructuredMemoryState, plan: list[str]) -> StructuredMemoryState:
     """Replace the current plan. Never mutates `state`."""
     return replace(state, current_plan=list(plan))
 
@@ -213,7 +222,11 @@ def render_for_prompt(state: StructuredMemoryState) -> str:
         or "(none yet)"
     )
     rejected = (
-        "\n".join(f"- {h.statement}" for h in state.rejected_hypotheses) or "(none yet)"
+        "\n".join(
+            f"- {h.statement} (support={h.supporting_evidence}, contradict={h.contradicting_evidence})"
+            for h in state.rejected_hypotheses
+        )
+        or "(none yet)"
     )
     questions = "\n".join(f"- {q}" for q in state.open_questions) or "(none yet)"
     plan = "; ".join(state.current_plan) or "(none)"
