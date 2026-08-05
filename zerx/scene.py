@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, List, Sequence, Set, Tuple
+from typing import Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
 from zerx.perception import LabeledObject, _find_objects
 from zerx.types import GameFrame
@@ -230,3 +230,96 @@ def perceive_scene(frame: GameFrame) -> Tuple[SceneObject, ...]:
             )
         )
     return tuple(scene_objects)
+
+
+def _bbox_overlap_ratio(
+    a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]
+) -> float:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    if ix0 > ix1 or iy0 > iy1:
+        return 0.0
+    inter = (ix1 - ix0 + 1) * (iy1 - iy0 + 1)
+    area_a = (ax1 - ax0 + 1) * (ay1 - ay0 + 1)
+    area_b = (bx1 - bx0 + 1) * (by1 - by0 + 1)
+    union = area_a + area_b - inter
+    return inter / union if union else 0.0
+
+
+def correspond_objects(
+    before: Tuple[SceneObject, ...], after: Tuple[SceneObject, ...]
+) -> Dict[int, Optional[int]]:
+    """Maps each `before` object_id to its best-guess `after` object_id (or
+    None if it disappeared). STRATEGY.md SS5.5: match by shape hash first;
+    when several before/after objects share a shape hash, disambiguate by
+    nearest centroid instead of always picking the same index -- duplicate
+    hashes must never collapse into one identity. Objects whose shape hash
+    has no match fall back to bbox overlap, preferring same-color matches
+    but still allowing a cross-color match (with no bonus) so a pure
+    recolor-in-place -- which never matches by hash, since shape_hash
+    includes color -- is still found via position instead of being
+    reported as one object disappearing and an unrelated one appearing.
+    """
+    used_after: Set[int] = set()
+    result: Dict[int, Optional[int]] = {}
+
+    after_by_hash: Dict[str, List[SceneObject]] = {}
+    for obj in after:
+        after_by_hash.setdefault(obj.shape_hash, []).append(obj)
+
+    before_by_hash: Dict[str, List[SceneObject]] = {}
+    for obj in before:
+        before_by_hash.setdefault(obj.shape_hash, []).append(obj)
+
+    for shape_hash, before_group in before_by_hash.items():
+        after_group = [
+            o for o in after_by_hash.get(shape_hash, []) if o.object_id not in used_after
+        ]
+        if not after_group:
+            continue
+        if len(before_group) == 1 and len(after_group) == 1:
+            result[before_group[0].object_id] = after_group[0].object_id
+            used_after.add(after_group[0].object_id)
+            continue
+        pairs = []
+        for b in before_group:
+            for a in after_group:
+                dist = (
+                    (b.centroid[0] - a.centroid[0]) ** 2
+                    + (b.centroid[1] - a.centroid[1]) ** 2
+                ) ** 0.5
+                pairs.append((dist, b.object_id, a.object_id))
+        pairs.sort(key=lambda p: p[0])
+        assigned_before: Set[int] = set()
+        for _, bid, aid in pairs:
+            if bid in assigned_before or aid in used_after:
+                continue
+            result[bid] = aid
+            assigned_before.add(bid)
+            used_after.add(aid)
+
+    remaining_after = [o for o in after if o.object_id not in used_after]
+    for b in before:
+        if b.object_id in result:
+            continue
+        best = None
+        best_score = 0.0
+        for a in remaining_after:
+            score = _bbox_overlap_ratio(b.bbox, a.bbox)
+            if a.color == b.color:
+                score *= 1.2
+            if score > best_score:
+                best_score = score
+                best = a
+        if best is not None:
+            result[b.object_id] = best.object_id
+            remaining_after.remove(best)
+            used_after.add(best.object_id)
+        else:
+            result[b.object_id] = None
+    return result
+
+
+find_correspondences = correspond_objects

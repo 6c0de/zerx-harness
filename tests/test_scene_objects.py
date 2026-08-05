@@ -153,3 +153,60 @@ def test_boundary_handles_a_hole_that_touches_the_outer_edge_at_one_vertex():
     # the outer boundary and the enclosed hole's boundary touch at one point
     assert obj.boundary.count((2, 2)) == 2
     assert len(obj.boundary) == 10
+
+
+from zerx.scene import correspond_objects, find_correspondences
+
+
+def test_correspond_objects_matches_unique_shapes():
+    before = perceive_scene(_frame([[5, 0], [0, 0]]))
+    after = perceive_scene(_frame([[0, 5], [0, 0]]))
+    mapping = correspond_objects(before, after)
+    assert mapping == {before[0].object_id: after[0].object_id}
+
+
+def test_correspond_objects_disambiguates_duplicate_shapes_by_nearest_centroid():
+    before = perceive_scene(_frame([
+        [5, 0, 0, 0, 5],
+        [0, 0, 0, 0, 0],
+    ]))
+    after = perceive_scene(_frame([
+        [5, 0, 0, 0, 0],
+        [0, 0, 0, 0, 5],
+    ]))
+    left_before = min(before, key=lambda o: o.centroid[0])
+    right_before = max(before, key=lambda o: o.centroid[0])
+    left_after = min(after, key=lambda o: o.centroid[0])
+    right_after = max(after, key=lambda o: o.centroid[0])
+    mapping = correspond_objects(before, after)
+    # both duplicates share a shape_hash -- must resolve by nearest centroid,
+    # not silently pick a fixed index for both.
+    assert mapping[left_before.object_id] == left_after.object_id
+    assert mapping[right_before.object_id] == right_after.object_id
+
+
+def test_correspond_objects_none_when_object_disappears():
+    before = perceive_scene(_frame([[5, 0], [0, 0]]))
+    after = perceive_scene(_frame([[0, 0], [0, 0]]))
+    mapping = correspond_objects(before, after)
+    assert mapping[before[0].object_id] is None
+
+
+def test_correspond_objects_falls_back_to_overlap_when_shape_changes_same_color():
+    before = perceive_scene(_frame([[5, 0], [0, 0]]))
+    after = perceive_scene(_frame([[5, 5], [0, 0]]))
+    mapping = correspond_objects(before, after)
+    assert mapping[before[0].object_id] == after[0].object_id
+
+
+def test_correspond_objects_matches_recolor_in_place_via_overlap_fallback():
+    # shape_hash includes color (STRATEGY.md SS5.3), so a pure recolor never
+    # matches by hash -- this is the fallback path that must still find it.
+    before = perceive_scene(_frame([[5, 5], [0, 0]]))
+    after = perceive_scene(_frame([[6, 6], [0, 0]]))
+    mapping = correspond_objects(before, after)
+    assert mapping[before[0].object_id] == after[0].object_id
+
+
+def test_find_correspondences_is_the_same_function():
+    assert find_correspondences is correspond_objects
