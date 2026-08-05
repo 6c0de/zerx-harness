@@ -228,3 +228,26 @@ def render_for_prompt(state: StructuredMemoryState) -> str:
         f"Open questions:\n{questions}\n"
         f"Notable failures:\n{failures}"
     )
+
+
+StructuredSummarizer = Callable[[StructuredMemoryState, str], StructuredMemoryState]
+# (previous_state, recent_context) -> new_state -- takes/returns the full
+# structured state, unlike Summarizer's str-in/str-out, because a
+# structured refresh may revise several fields in one pass.
+
+
+def maybe_refresh_structured(
+    state: StructuredMemoryState,
+    recent_context: str,
+    summarizer: StructuredSummarizer,
+    refresh_interval: int,
+) -> StructuredMemoryState:
+    """Same due/not-due/never-mutate contract as maybe_refresh, adapted to
+    StructuredSummarizer's full-state-in/full-state-out shape.
+    """
+    new_step_count = state.step_count + 1
+    due = (new_step_count - state.last_refreshed_step) >= refresh_interval
+    if not due:
+        return replace(state, step_count=new_step_count)
+    updated = summarizer(state, recent_context)
+    return replace(updated, step_count=new_step_count, last_refreshed_step=new_step_count)

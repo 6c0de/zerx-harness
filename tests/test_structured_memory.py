@@ -134,6 +134,7 @@ def test_contradict_hypothesis_does_not_mutate_input():
 
 from zerx.memory import (
     add_open_question,
+    maybe_refresh_structured,
     record_notable_failure,
     set_current_goal,
     set_current_plan,
@@ -203,3 +204,34 @@ def test_render_for_prompt_is_pure_and_deterministic():
     state = StructuredMemoryState(current_goal="reach the exit")
     assert render_for_prompt(state) == render_for_prompt(state)
     assert state.current_goal == "reach the exit"  # not mutated
+
+
+def test_maybe_refresh_structured_not_due_keeps_state_and_skips_summarizer():
+    state = StructuredMemoryState(current_goal="old goal", step_count=0, last_refreshed_step=0)
+
+    def boom(prev, ctx):
+        raise AssertionError("summarizer should not be called")
+
+    new_state = maybe_refresh_structured(state, "context", boom, refresh_interval=10)
+    assert new_state.current_goal == "old goal"
+    assert new_state.step_count == 1
+    assert new_state.last_refreshed_step == 0
+
+
+def test_maybe_refresh_structured_due_calls_summarizer_and_updates():
+    state = StructuredMemoryState(current_goal="old goal", step_count=8, last_refreshed_step=0)
+
+    def summarizer(prev, ctx):
+        return set_current_goal(prev, f"{prev.current_goal}+{ctx}")
+
+    new_state = maybe_refresh_structured(state, "context", summarizer, refresh_interval=9)
+    assert new_state.step_count == 9
+    assert new_state.last_refreshed_step == 9
+    assert new_state.current_goal == "old goal+context"
+
+
+def test_maybe_refresh_structured_does_not_mutate_input():
+    state = StructuredMemoryState(current_goal="old goal", step_count=0, last_refreshed_step=0)
+    maybe_refresh_structured(state, "context", lambda prev, ctx: set_current_goal(prev, "new goal"), refresh_interval=1)
+    assert state.current_goal == "old goal"
+    assert state.step_count == 0
