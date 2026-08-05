@@ -255,6 +255,17 @@ exactly. Full suite: 270 passed, 0 failed (261 base + 9 new: 2 config, 7
 backend selection). See
 `docs/superpowers/plans/2026-08-05-baseline-120-backend-wiring.md`.
 
+**Track 2 (real-game eval harness) — done.** Branch
+`feat/baseline-120-eval-harness`, 2026-08-05. `eval/run_ablation.py`
+gained `run_games(config, game_ids, max_steps=200)`, implemented against
+`FakeModelBackend` (Track 1's `select_backend` not yet merged at the time
+this track wrote its code — no functional dependency, per the plan). 3
+new tests added, full suite 264 passed, 0 failed. `rhae` design decision:
+`None` when the game's `EnvironmentScore.message` is set (no
+baseline-actions data for that game), distinct from a genuine `0.0` —
+`ls20` observed with `rhae=None` at 5-step cap in this track's own test
+run. See `docs/superpowers/plans/2026-08-05-baseline-120-eval-harness.md`.
+
 ## Uncommitted or external artifacts
 
 None tracked or required. `.venv/`, `vendor/ARC-AGI-3-Agents/`,

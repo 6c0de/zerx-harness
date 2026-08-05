@@ -1,6 +1,7 @@
 import json
+import os
 
-from eval.run_ablation import ExperimentRecord, sweep_configs, write_records
+from eval.run_ablation import ExperimentRecord, run_games, sweep_configs, write_records
 from zerx.config import Config
 
 
@@ -66,3 +67,30 @@ def test_sweep_configs_skips_value_equal_to_base():
     base = Config(heuristic_first=False)
     configs = sweep_configs(base, heuristic_first=[False])
     assert configs == [base]
+
+
+def test_run_games_empty_game_ids_returns_empty_list():
+    assert run_games(Config(backend="fake"), []) == []
+
+
+def test_run_games_plays_real_local_game():
+    records = run_games(Config(backend="fake"), ["ls20"], max_steps=5)
+    assert len(records) == 1
+    record = records[0]
+    assert record.game_id == "ls20"
+    assert record.actions_taken > 0
+    assert record.rhae is None or isinstance(record.rhae, float)
+
+
+def test_run_games_restores_env_vars():
+    os.environ["ZERX_UNRELATED_TEST_VAR"] = "unchanged"
+    had_backend_before = "ZERX_BACKEND" in os.environ
+    backend_before = os.environ.get("ZERX_BACKEND")
+    try:
+        run_games(Config(backend="fake"), ["ls20"], max_steps=5)
+        assert os.environ["ZERX_UNRELATED_TEST_VAR"] == "unchanged"
+        assert ("ZERX_BACKEND" in os.environ) == had_backend_before
+        if had_backend_before:
+            assert os.environ["ZERX_BACKEND"] == backend_before
+    finally:
+        del os.environ["ZERX_UNRELATED_TEST_VAR"]
