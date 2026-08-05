@@ -44,6 +44,7 @@ class Config:
     model_revision: str = "gemma-4-31b-it"
     backend: str = "fake"  # "fake" | "cerebras_dev" | "gemma_local" | "gemma_kaggle"
     platform: str = "local"  # "local" | "colab" | "kaggle"
+    structured_memory_on: bool = False
 
     def __post_init__(self) -> None:
         if self.backend == "cerebras_dev" and self.platform == "kaggle":
@@ -74,6 +75,9 @@ class Config:
             model_revision=_env_str(env, "ZERX_MODEL_REVISION", cls.model_revision),
             backend=_env_str(env, "ZERX_BACKEND", cls.backend),
             platform=_env_str(env, "ZERX_PLATFORM", cls.platform),
+            structured_memory_on=_env_bool(
+                env, "ZERX_STRUCTURED_MEMORY_ON", cls.structured_memory_on
+            ),
         )
 
     def to_json(self) -> str:
