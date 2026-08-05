@@ -136,7 +136,7 @@ person, under `docs/superpowers/plans/parallel-day3/`:
 
 | # | Track (STRATEGY.md ladder) | Branch | Prompt file |
 |---|---|---|---|
-| 1 | `baseline-115-exact-state-memory` — **done**, 157/157 tests green, off by default | `feat/baseline-115-exact-state-memory` | `docs/superpowers/plans/parallel-day3/person-1-baseline-115.md` |
+| 1 | `baseline-115-exact-state-memory` — **done**, 159/159 tests green, off by default, whole-branch review clean (2 Critical bugs found + fixed post-hoc: terminal-frame guard, cascading-suppression escape) | `feat/baseline-115-exact-state-memory` | `docs/superpowers/plans/parallel-day3/person-1-baseline-115.md` |
 | 2 | `baseline-130-hypothesis` (structured memory) | `feat/baseline-130-hypothesis-memory` | `docs/superpowers/plans/parallel-day3/person-2-baseline-130.md` |
 | 3 | `exp-140-vlm-refinement` (candidate/arbiter infra, off by default) | `feat/exp-140-vlm-refinement` | `docs/superpowers/plans/parallel-day3/person-3-exp-140.md` |
 | 4 | `exp-150-duck-tools` Variants A+B (segmentation + fixed analysis tools) | `feat/exp-150-duck-tools-ab` | `docs/superpowers/plans/parallel-day3/person-4-exp-150.md` |
