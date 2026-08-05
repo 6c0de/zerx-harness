@@ -1,4 +1,4 @@
-from zerx.transitions import TransitionLedger
+from zerx.transitions import TransitionLedger, grid_hash
 from zerx.types import Action, ActionName, GameFrame
 
 DEFAULT_LEGAL = frozenset({ActionName.ACTION1, ActionName.ACTION2, ActionName.ACTION5})
@@ -90,3 +90,15 @@ def test_records_legal_actions_before_and_after():
     record = ledger.finalize(after)
     assert record.legal_before == frozenset({ActionName.ACTION1})
     assert record.legal_after == frozenset({ActionName.ACTION1, ActionName.ACTION5})
+
+
+def test_grid_hash_is_public_and_deterministic():
+    frame = _frame([[1, 2], [3, 4]])
+    assert grid_hash(frame) == grid_hash(frame)
+    assert isinstance(grid_hash(frame), str)
+
+
+def test_grid_hash_differs_for_different_grids():
+    a = _frame([[0, 0], [0, 0]])
+    b = _frame([[0, 0], [0, 1]])
+    assert grid_hash(a) != grid_hash(b)

@@ -14,9 +14,12 @@ from typing import Deque, FrozenSet, Optional, Tuple
 from zerx.types import Action, ActionName, GameFrame
 
 
-def _grid_hash(frame: GameFrame) -> str:
+def grid_hash(frame: GameFrame) -> str:
     flat = ",".join(str(v) for row in frame.grid for v in row)
     return hashlib.sha256(flat.encode("utf-8")).hexdigest()[:16]
+
+
+_grid_hash = grid_hash
 
 
 def _diff(
