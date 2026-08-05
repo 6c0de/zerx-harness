@@ -49,15 +49,17 @@ def generate_candidates(
     """Calls backend.generate(prompt) `count` times, parses each response,
     scores each deterministically. Never calls an arbiter -- that's a
     separate, explicitly optional step (see select_candidate()). A
-    response that fails to parse gets parsed=None and a 0.0 score but does
-    not stop generation of the remaining candidates.
+    response that fails to generate OR fails to parse gets parsed=None
+    and a 0.0 score but does not stop generation of the remaining
+    candidates -- each candidate's failure is isolated to itself.
     """
     candidates: List[Candidate] = []
     for _ in range(count):
-        raw = backend.generate(prompt)
         try:
+            raw = backend.generate(prompt)
             parsed = parse_action(raw, legal_actions)
         except Exception:
+            raw = ""
             parsed = None
         candidates.append(
             Candidate(

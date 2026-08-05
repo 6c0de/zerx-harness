@@ -68,6 +68,33 @@ def test_generate_candidates_stores_raw_response_and_score():
     assert candidates[0].static_score == 1.0
 
 
+def test_generate_candidates_isolates_backend_failure_to_one_candidate():
+    """A backend that raises on one call (not just returns unparseable
+    text) must not abort the whole batch -- the surrounding candidates
+    must still be collected."""
+
+    class FlakyBackend:
+        def __init__(self, outcomes):
+            self._outcomes = list(outcomes)
+            self.call_count = 0
+
+        def generate(self, prompt: str) -> str:
+            self.call_count += 1
+            outcome = self._outcomes.pop(0)
+            if outcome is None:
+                raise RuntimeError("simulated transient backend failure")
+            return outcome
+
+    backend = FlakyBackend(['{"action": "ACTION1"}', None, '{"action": "ACTION5"}'])
+    candidates = generate_candidates(backend, "prompt", LEGAL, count=3)
+    assert backend.call_count == 3
+    assert len(candidates) == 3
+    assert candidates[0].parsed is not None
+    assert candidates[1].parsed is None
+    assert candidates[1].static_score == 0.0
+    assert candidates[2].parsed is not None
+
+
 from zerx.candidates import select_best_candidate
 
 
