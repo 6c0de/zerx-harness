@@ -58,6 +58,31 @@ def test_build_installs_vllm_via_uv_torch_backend_auto():
     assert "--torch-backend=auto" in combined
 
 
+def test_build_forces_reinstall_to_avoid_colabs_preexisting_torch():
+    """--torch-backend=auto alone was NOT enough (real Colab run,
+    2026-08-04): the same libcudart.so.13 error recurred, because pip/uv
+    treated Colab's pre-existing torch as already satisfying the
+    requirement and left it untouched, pairing it with a freshly
+    installed, differently-CUDA-linked vLLM extension -- exactly the
+    "binary incompatibility" vLLM's own docs warn about. --reinstall
+    forces uv to actually replace the pre-existing state.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert "--reinstall" in combined
+
+
+def test_env_print_cell_reports_torchs_actual_cuda_build():
+    """nvidia-smi's "CUDA Version" is the driver's max-supported ceiling,
+    not what torch/vllm actually linked against -- confusing the two
+    caused two rounds of misdiagnosis on 2026-08-04. The env-print cell
+    must print torch's own resolved CUDA build directly so a future
+    libcudart-style failure is diagnosable from this cell alone.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert "torch.version.cuda" in combined
+    assert "torch.cuda.is_available()" in combined
+
+
 def test_build_checks_out_exact_commit():
     combined = _all_cell_sources(build_colab_notebook.build())
     assert "git checkout" in combined

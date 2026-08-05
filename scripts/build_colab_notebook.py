@@ -60,8 +60,20 @@ PINNED_INSTALL = dedent(
     # file". Per vLLM's own install docs (docs.vllm.ai, GPU install page),
     # use `uv pip install --torch-backend=auto` instead, which detects the
     # installed driver's CUDA version and selects a matching build.
+    #
+    # --torch-backend=auto alone was NOT enough (real Colab run,
+    # 2026-08-04): the SAME libcudart.so.13 error recurred, because Colab
+    # ships a pre-existing torch install that pip/uv treats as "already
+    # satisfies the requirement" and leaves untouched, so vLLM's freshly
+    # installed CUDA-13-targeted extension ends up paired with whatever
+    # (possibly differently-CUDA-linked) torch Colab already had --
+    # exactly the "binary incompatibility with other CUDA versions" vLLM's
+    # own docs warn about, recommending "a fresh new environment". `pip`
+    # cannot create a venv inside a running Colab kernel, so the practical
+    # equivalent is `--reinstall`: force uv to replace the pre-existing
+    # torch/vllm state instead of silently trusting it.
     !pip install -q uv
-    !uv pip install -q --system "vllm==0.26.0" --torch-backend=auto
+    !uv pip install -q --system --reinstall "vllm==0.26.0" --torch-backend=auto
     !pip install -q "bitsandbytes>=0.43.0"
     """
 )
@@ -122,6 +134,18 @@ def build() -> dict:
             for pkg in ("vllm", "torch", "arc-agi"):
                 spec = pkgutil.find_loader(pkg.replace("-", "_"))
                 print(pkg, "installed:", spec is not None)
+            # nvidia-smi's "CUDA Version" is the DRIVER's max-supported ceiling,
+            # not what torch/vllm actually linked against -- that mismatch is
+            # exactly what caused two rounds of misdiagnosis on 2026-08-04. Print
+            # torch's own resolved CUDA build directly so a future libcudart-style
+            # failure is diagnosable from this cell alone, not from guessing.
+            try:
+                import torch
+                print("torch.__version__:", torch.__version__)
+                print("torch.version.cuda:", torch.version.cuda)
+                print("torch.cuda.is_available():", torch.cuda.is_available())
+            except Exception as exc:
+                print("torch CUDA introspection failed:", exc)
             # Deliberately never prints any API key or auth token — this backend
             # does not read them; only confirms GPU + package versions.
             """
