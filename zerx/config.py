@@ -44,6 +44,7 @@ class Config:
     model_revision: str = "gemma-4-31b-it"
     backend: str = "fake"  # "fake" | "cerebras_dev" | "gemma_local" | "gemma_kaggle"
     platform: str = "local"  # "local" | "colab" | "kaggle"
+    candidate_count: int = 1
 
     def __post_init__(self) -> None:
         if self.backend == "cerebras_dev" and self.platform == "kaggle":
@@ -53,6 +54,8 @@ class Config:
             )
         if self.budget_soft_cap <= 0:
             raise ValueError("budget_soft_cap must be positive")
+        if self.candidate_count < 1:
+            raise ValueError("candidate_count must be >= 1")
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Config":
@@ -74,6 +77,7 @@ class Config:
             model_revision=_env_str(env, "ZERX_MODEL_REVISION", cls.model_revision),
             backend=_env_str(env, "ZERX_BACKEND", cls.backend),
             platform=_env_str(env, "ZERX_PLATFORM", cls.platform),
+            candidate_count=_env_int(env, "ZERX_CANDIDATE_COUNT", cls.candidate_count),
         )
 
     def to_json(self) -> str:
