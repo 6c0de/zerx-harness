@@ -109,12 +109,20 @@ def _find_children(
 
 
 def _trace_boundary(cells: FrozenSet[Tuple[int, int]]) -> Tuple[Tuple[int, int], ...]:
-    """Clockwise outer boundary (STRATEGY.md SS5.3) via unit-edge tracing:
-    collect every cell-to-background edge, link them into closed loops,
-    keep the loop with the largest *positive* signed area (the outer
-    boundary -- hole boundaries trace with the opposite, negative
-    orientation and are discarded), then collapse colinear points so the
-    result is the minimal corner polygon, not every unit step.
+    """Clockwise outer boundary (STRATEGY.md SS5.3) via wall-following
+    contour tracing: starts from the topmost-then-leftmost eastward-facing
+    edge (always on the true outer boundary, never a hole), then at each
+    vertex picks the next unit edge by a fixed turn-priority -- right turn,
+    then straight, then left turn, then back -- which is the standard,
+    deterministic technique for tracing a pixel region's outer contour
+    without depending on incidental iteration order. Colinear points are
+    then collapsed so the result is the minimal corner polygon.
+
+    If a hole touches the outer boundary at exactly one grid vertex (a
+    "pinch"), that vertex appears twice in the returned sequence -- a
+    valid degenerate simple closed curve, not corrupted data. Consumers
+    that need a strictly-simple polygon should treat a repeated vertex as
+    a seam, not an error.
     """
     edges: List[Tuple[Tuple[int, int], Tuple[int, int]]] = []
     for cx, cy in cells:
@@ -131,36 +139,44 @@ def _trace_boundary(cells: FrozenSet[Tuple[int, int]]) -> Tuple[Tuple[int, int],
     for start, end in edges:
         start_map.setdefault(start, []).append(end)
 
-    remaining = set(edges)
-    loops: List[List[Tuple[int, int]]] = []
-    while remaining:
-        first = next(iter(remaining))
-        loop = [first[0]]
-        current = first
-        while True:
-            remaining.discard(current)
-            next_start = current[1]
-            loop.append(next_start)
-            if next_start == loop[0]:
+    east_starts = [s for (s, e) in edges if e[0] > s[0] and e[1] == s[1]]
+    start_vertex = min(east_starts, key=lambda v: (v[1], v[0]))
+
+    turn_right = {(1, 0): (0, 1), (0, 1): (-1, 0), (-1, 0): (0, -1), (0, -1): (1, 0)}
+    turn_left = {v: k for k, v in turn_right.items()}
+    turn_back = {(1, 0): (-1, 0), (-1, 0): (1, 0), (0, 1): (0, -1), (0, -1): (0, 1)}
+
+    def direction(a: Tuple[int, int], b: Tuple[int, int]) -> Tuple[int, int]:
+        return (b[0] - a[0], b[1] - a[1])
+
+    loop = [start_vertex]
+    current_vertex = start_vertex
+    current_dir = (1, 0)
+    used: Set[Tuple[Tuple[int, int], Tuple[int, int]]] = set()
+    while True:
+        candidates = start_map.get(current_vertex, [])
+        priority = [
+            turn_right[current_dir],
+            current_dir,
+            turn_left[current_dir],
+            turn_back[current_dir],
+        ]
+        next_end = None
+        for want_dir in priority:
+            for end in candidates:
+                if (current_vertex, end) in used:
+                    continue
+                if direction(current_vertex, end) == want_dir:
+                    next_end = end
+                    break
+            if next_end is not None:
                 break
-            candidates = [
-                (next_start, end)
-                for end in start_map.get(next_start, [])
-                if (next_start, end) in remaining
-            ]
-            current = candidates[0]
-        loops.append(loop[:-1])
-
-    def signed_area(loop: List[Tuple[int, int]]) -> float:
-        total = 0.0
-        n = len(loop)
-        for i in range(n):
-            x0, y0 = loop[i]
-            x1, y1 = loop[(i + 1) % n]
-            total += x0 * y1 - x1 * y0
-        return total / 2
-
-    outer = max(loops, key=signed_area)
+        used.add((current_vertex, next_end))
+        current_dir = direction(current_vertex, next_end)
+        current_vertex = next_end
+        if current_vertex == start_vertex:
+            break
+        loop.append(current_vertex)
 
     def simplify(loop: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
         if len(loop) <= 2:
@@ -177,7 +193,7 @@ def _trace_boundary(cells: FrozenSet[Tuple[int, int]]) -> Tuple[Tuple[int, int],
                 simplified.append(curr)
         return simplified
 
-    return tuple(simplify(outer))
+    return tuple(simplify(loop))
 
 
 def perceive_scene(frame: GameFrame) -> Tuple[SceneObject, ...]:

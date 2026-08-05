@@ -131,3 +131,25 @@ def test_nested_object_is_a_child_of_its_enclosing_ring():
     assert center.child_ids == ()
     # outer boundary must trace the ring's outside, not the hole -- 4 corners, not 8+
     assert set(ring.boundary) == {(0, 0), (5, 0), (5, 5), (0, 5)}
+
+
+def test_boundary_handles_a_hole_that_touches_the_outer_edge_at_one_vertex():
+    # a single background cell fully enclosed by object cells, positioned so
+    # the enclosing shape also has a notch touching that same grid vertex --
+    # this is the "pinch point" case a naive loop-collection boundary tracer
+    # can resolve ambiguously. cells: (1,0)(2,0)(3,0)/(1,1)___(3,1)/__(2,2)(3,2)
+    grid = [
+        [0, 1, 1, 1],
+        [0, 1, 0, 1],
+        [0, 0, 1, 1],
+    ]
+    scene = perceive_scene(_frame(grid))
+    assert len(scene) == 1
+    obj = scene[0]
+    # deterministic across repeated calls -- no dependency on set/dict iteration order
+    again = perceive_scene(_frame(grid))[0]
+    assert obj.boundary == again.boundary
+    # the shared pinch vertex (2, 2) legitimately appears twice: it's where
+    # the outer boundary and the enclosed hole's boundary touch at one point
+    assert obj.boundary.count((2, 2)) == 2
+    assert len(obj.boundary) == 10
