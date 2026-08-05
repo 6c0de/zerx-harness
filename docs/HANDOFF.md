@@ -224,18 +224,24 @@ backend selection). See
 `docs/superpowers/plans/2026-08-05-baseline-120-backend-wiring.md`.
 
 - Track 4 (`feat/baseline-120-colab-validation`, Colab validation): Part A
-  complete (multi-game notebook + real per-game RHAE capture) — commit
-  `48bfcc8b352595393c6de01f042572cc42880a99`. Merged Track 1
-  (`origin/feat/baseline-120-backend-wiring`) in at commit `98e6e73`
-  (one mechanical conflict in this file, resolved by keeping both
-  sides); confirmed `select_backend` imports and `gemma_local` resolves
-  with no behavior change. Full suite post-merge: **277 passed, 0
-  failed**. Part B is now blocked on exactly one thing: no
-  `CEREBRAS_API_KEY` in this environment (Track 1's own blocker is fully
-  resolved). The actual Colab GPU run still needs a human to execute the
-  regenerated notebook. See
-  `docs/superpowers/experiments/baseline-120.md` for full detail — still
-  `investigate`, not `keep`/`revert`.
+  complete (multi-game notebook + real per-game RHAE capture). Merged
+  Track 1 (`origin/feat/baseline-120-backend-wiring`) in at commit
+  `98e6e73`; confirmed `select_backend` imports and `gemma_local`
+  resolves with no behavior change. Found and fixed a real
+  Cloudflare-WAF bug blocking every Cerebras call (missing `User-Agent`
+  header, commit `ebfdaf1`) — out-of-scope file, fixed with explicit
+  owner approval since it blocked this track's own deliverable. Full
+  `cerebras_dev` sweep now run for real across the 8-game sample: `0.0`
+  aggregate score, 0 levels completed everywhere, action patterns
+  matching the deterministic/heuristic fallback chain rather than varied
+  model play — root-caused to `zerx/policy.py`'s `build_prompt()` never
+  listing the actual legal action names, a real prompt-design gap, not a
+  broken connection (confirmed real API calls succeeded). Full suite:
+  **278 passed, 0 failed**. Only the authoritative Colab Gemma-4-31B-it
+  run remains (needs a human on a real Colab GPU runtime — no tool here
+  can drive that). See `docs/superpowers/experiments/baseline-120.md`
+  for full detail — `investigate`, not `keep`/`revert`, and it names a
+  concrete next experiment (add legal actions to the prompt, re-run).
 
 ## Uncommitted or external artifacts
 

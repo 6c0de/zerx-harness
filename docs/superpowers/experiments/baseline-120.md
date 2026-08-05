@@ -172,20 +172,86 @@ change). The Part A step 3 sanity check above also surfaced and fixed a
 real Cloudflare-WAF blocker in `zerx/backends/cerebras_dev.py` shared by
 this exact code path — see above.
 
-Command for whoever runs this in a terminal where `CEREBRAS_API_KEY` is
-actually set:
+Command run (2026-08-06, PowerShell, `CEREBRAS_API_KEY` set in that
+session's own environment, not this Claude Code session's):
 
-```bash
-export ZERX_BACKEND=cerebras_dev
-export ZERX_PLATFORM=local
-export ZERX_MODEL_REVISION=gemma-4-31b
+```powershell
+$env:ZERX_BACKEND = "cerebras_dev"
+$env:ZERX_PLATFORM = "local"
+$env:ZERX_MODEL_REVISION = "gemma-4-31b"
 .venv/Scripts/python.exe scripts/play_local.py --game ls20,vc33,su15,tn36,ka59,lf52,tr87,sc25 --max-steps 100
 ```
 
-Given the sanity check's finding above (the prompt never lists legal
-action names), expect a high rate of parse failures/fallback actions in
-this run — that is real signal about the current prompt design, not a
-sign something is broken.
+**Real bug discovered in the run itself: the sweep only ran 80 steps per
+game, not the requested 100.** Root cause, confirmed by reading
+`scripts/play_local.py`:
+
+```python
+if hasattr(MyAgentCls, "MAX_ACTIONS"):
+    MyAgentCls.MAX_ACTIONS = min(MyAgentCls.MAX_ACTIONS, args.max_steps)
+```
+
+`MyAgent` (`agent/my_agent.py`) does not override `MAX_ACTIONS`, so it
+inherits the vendored base `agents.agent.Agent` class's default of `80`
+(`vendor/ARC-AGI-3-Agents/agents/agent.py:22`). `min(80, 100) = 80` —
+`--max-steps` can only ever *lower* the step cap below whatever the agent
+class already has, never raise it. This is a real, pre-existing quirk in
+`scripts/play_local.py`, confirmed but **not fixed** — that file is
+outside this branch's scope and this session's owner asked that no
+out-of-scope changes be made without asking first. Recorded here as the
+actual, accurate step count rather than the originally intended one.
+
+**Per-game results (actual: 80 steps/game, not 100):**
+
+| game | state | levels_completed | actions | dominant action(s) observed |
+|---|---|---|---:|---|
+| tn36 | NOT_FINISHED | 0 | 81 | `ACTION6` every step, one `RESET` at count 61 |
+| lf52 | NOT_FINISHED | 0 | 81 | `ACTION6` every step, one `RESET` at count 64 |
+| ls20 | NOT_FINISHED | 0 | 81 | `ACTION1` every single step, no variation |
+| ka59 | NOT_FINISHED | 0 | 81 | `ACTION6` every step, no `RESET` |
+| vc33 | NOT_FINISHED | 0 | 81 | `ACTION6` every step, one `RESET` at count 50 |
+| su15 | NOT_FINISHED | 0 | 81 | `ACTION6` every step, two `RESET`s (33, 66) |
+| tr87 | NOT_FINISHED | 0 | 81 | `ACTION1` every single step, no variation |
+| sc25 | NOT_FINISHED | 0 | 81 | `ACTION6` every step, no `RESET` |
+
+**Aggregate scorecard score: 0.0.** Every game reached `NOT_FINISHED`
+(never `WIN`), 0 levels completed in every game — numerically identical
+to this plan's pre-existing "before" reference (the connection-broken,
+all-fallback baseline the README measured before Track 1's fix).
+
+**Analysis — this is very likely the same root cause the sanity check
+already surfaced, now showing up at scale, not a new problem:** real
+Cerebras calls succeeded this time (Track 1 + the User-Agent fix both
+confirmed working), yet the outcome is indistinguishable from the
+broken-connection reference. The per-step action pattern is the direct
+signature of `zerx/policy.py`'s fallback chain, not of a model actually
+choosing varied actions turn to turn:
+- Every game that had `ACTION6` in its legal-action set picked `ACTION6`
+  on essentially every single step — matching `decide()`'s
+  `fallback_heuristic` path (the top-ranked click candidate), which
+  `parse_action(...)`'s `None` return triggers on a failed parse.
+- The two games without a strong `ACTION6` affordance (`ls20`, `tr87`)
+  picked `ACTION1` on literally every step with zero variation — matching
+  `_deterministic_fallback()`'s fixed `_FALLBACK_PREFERENCE` order
+  (`ACTION5, ACTION1, ACTION2, ...`), which returns the *same* action for
+  the *same* legal-action set every time, exactly the pattern observed.
+- This is consistent with (not proof of, since `scripts/play_local.py`
+  doesn't log `Decision.source` per step) the Part A sanity check's 2/2
+  real parse failures on the identical model/prompt: `build_prompt()`
+  never lists the actual legal action names, so `gemma-4-31b` on Cerebras
+  very plausibly failed to produce a parseable action on most or all of
+  these 640 total decisions (8 games × 80 steps), falling through to the
+  same deterministic/heuristic fallback chain that produced the original
+  0.0 reference — this time because of a prompt-design gap, not a broken
+  connection.
+
+**This dev-lane result should be treated as strong evidence that
+`baseline-120-reki-core`'s current prompt does not yet let a real model
+drive play**, not as evidence the Reki-core loop itself doesn't work.
+Confirming this precisely (i.e., logging `Decision.source` per step to
+distinguish "model produced a valid action" from "fell back") is a
+natural next investigation, but is prompt/tracing work outside this
+track's scope — flagged here as a finding, not applied.
 
 ## Part B — authoritative Colab Gemma-4-31B-it run
 
@@ -195,35 +261,51 @@ requires a human to upload it at colab.research.google.com, attach a GPU
 runtime, and run all cells — no tool available to this Claude Code
 session can drive a live Colab browser session (`AGENTS.md`'s environment
 split: Colab is a human-operated, model-loading environment, distinct
-from this local, model-free development environment). The harness-level
-`cerebras_dev` sweep above also did not run (see "doubly blocked" above),
-so no real per-game model-in-loop signal exists yet for this rung from
-either lane.
+from this local, model-free development environment). This is the one
+remaining gap for this rung: the dev-lane sweep above is now complete and
+real, but per `AGENTS.md`/`STRATEGY.md`'s hard rule it is a proxy result,
+never a substitute for this run.
 
 ## Conclusion
 
 **`investigate`**, per `STRATEGY.md` §7.1 — the closest fit to "a
 measurement/logging defect exists," following `baseline-100.md`'s own
-precedent for recording an honest, partially-complete result rather than
-forcing a `keep`/`revert` verdict. The notebook/tooling gap
-`baseline-100.md` flagged ("per-game play outcome not captured") is now
-closed (Part A: real per-game state/levels/actions/RHAE capture,
-exception-isolated across an 8-game sample). The backend-selection bug
-this plan's README measured (`agent/my_agent.py` ignoring
-`Config.backend`) is also now fixed and merged in (Track 1). Full local
-suite green at **277 passed, 0 failed** post-merge. But no real per-game
-model-in-loop measurement exists yet for `baseline-120` itself — neither
-the `cerebras_dev` dev-lane proxy (Part B, blocked purely on a missing
-`CEREBRAS_API_KEY` now that Track 1 is merged) nor the authoritative
-Colab Gemma run (Part B, requires human execution on Colab). This is
-explicitly **not** `keep` (no evidence supports it — this record contains
-zero real-model per-game results) and explicitly **not** `revert`
-(nothing was measured to revert). Next step for whoever picks this up:
-(1) obtain a personal `CEREBRAS_API_KEY` and run Part A step 3's
-standalone sanity check + Part B's harness sweep (command above — remember
-`ZERX_MODEL_REVISION=gemma-4-31b`, not the Gemma default), (2) have a
-human run the now-ready, Track-1-wired notebook on a real Colab A100/L4
-GPU runtime with the same 8-game sample, then (3) re-decide this
-conclusion from the Colab result specifically, per
-`AGENTS.md`/`STRATEGY.md`'s hard rule that a Cerebras result never
-substitutes for it.
+precedent for recording an honest result rather than forcing a
+`keep`/`revert` verdict where the evidence doesn't clearly support one.
+
+Real progress this session: the notebook/tooling gap `baseline-100.md`
+flagged is closed (Part A); the backend-selection bug this plan's README
+measured is fixed and merged (Track 1); a real, previously-unknown
+Cloudflare-WAF bug blocking every Cerebras call was found and fixed; and
+a **real, working dev-lane sweep now exists** — 8 games, 80 real
+model-in-loop decisions per game (640 total), against the actual
+`agent/my_agent.py`/`decide()` loop with a genuinely reachable model.
+
+But the dev-lane result itself (`0.0` aggregate score, 0 levels completed
+in every game, action patterns matching the deterministic/heuristic
+fallback chain rather than varied model-driven play) is **strong evidence
+of a specific, fixable prompt-design gap** — `build_prompt()` never tells
+the model the actual legal action vocabulary — **not evidence that
+`baseline-120-reki-core`'s loop is ineffective**. This is explicitly
+**not** `keep` (the measured behavior is indistinguishable from the
+pre-existing fallback-only reference) and explicitly **not** `revert`
+(the loop's actual reasoning path was never really exercised, given the
+prompt gap — there's nothing substantive to revert). `investigate` is the
+right call specifically because the measurement points at *what* to fix
+next (the prompt's missing legal-action list) rather than settling
+`baseline-120`'s promotion question either way.
+
+**Next steps for whoever picks this up** (all out of this track's scope,
+noted here as findings, not applied): (1) as a likely-cheap follow-up
+experiment, add the legal action names to `build_prompt()`'s output and
+re-run this exact same dev-lane sweep to see whether real model-driven
+play emerges — this alone could flip the picture entirely; (2) add
+per-step `Decision.source` logging to `scripts/play_local.py` or
+`eval/run_ablation.py`'s `run_games` to confirm definitively how many of
+the 640 decisions were `"model"` vs a fallback source, rather than
+inferring it from the action pattern as done here; (3) have a human run
+the now-ready, Track-1-wired notebook on a real Colab A100/L4 GPU with
+the same 8-game sample — per `AGENTS.md`/`STRATEGY.md`'s hard rule, this
+Cerebras proxy result never substitutes for that run, and the prompt gap
+found here would very plausibly reproduce identically against the real
+Gemma-4-31B-it backend too, worth confirming rather than assuming.
