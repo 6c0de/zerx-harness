@@ -234,7 +234,18 @@ parallel tracks below (none of them touch Kaggle).
    candidate: add a `legal_actions` parameter to `build_prompt()`'s
    signature, render them in the prompt text, re-run the same 8-game
    sweep. See `docs/superpowers/experiments/baseline-120.md` for full
-   detail.
+   detail. **Independently reproduced live, 2026-08-06,** using
+   `feat/baseline-120-followups`' new visualizer against a real
+   `cerebras_dev` run on `ls20` with a valid API key: the model returned
+   a perfectly well-formed `{"action": "ACTION6", "data": {"x": 36, "y":
+   15}}`, but `ls20` never has `ACTION6` legal, so `parse_action()`
+   correctly rejected it and every step fell through to
+   `fallback_deterministic` — same symptom, now confirmed via a second,
+   independent live run rather than only Track 4's original sweep. Fix
+   already exists, not yet merged: `feat/policy-prompt-legal-budget`'s
+   `e402a0d fix(policy): surface legal actions and budget signal in
+   build_prompt` — see
+   `docs/superpowers/plans/2026-08-06-baseline-120-followups-integration.md`.
 7. **`scripts/play_local.py`'s `MyAgentCls.MAX_ACTIONS = min(MyAgentCls.MAX_ACTIONS,
    args.max_steps)` can only ever *lower* the step cap**, never raise it
    above `MyAgentCls`'s existing default (80, inherited from the vendored
@@ -255,6 +266,28 @@ parallel tracks below (none of them touch Kaggle).
    sweep drives `MyAgent` directly rather than through this script, so it
    was not exposed to the crash; not fixed (out of scope for all
    `baseline-120` tracks).
+9. **`build_prompt()` never asks the model for a reasoning/rationale
+   field, only the bare action JSON.** The prompt's own final
+   instruction is *"Respond with exactly one JSON object: {"action":
+   ..., "data": ...}"* — no field for the model to explain *why* it
+   chose that action. **This is a deliberate design choice, not a bug:**
+   confirmed live 2026-08-06 while debugging a real `cerebras_dev` run
+   with `feat/baseline-120-followups`' new visualizer — every response
+   the model actually returned was bare JSON and nothing else, exactly
+   matching what the prompt asked for; the model is following
+   instructions correctly. Keeping responses short avoids wasted
+   tokens/latency on every single call, which matters given `decide()`
+   allows only one bounded model call per step.
+
+   Worth revisiting as a **switchable** option (a new `Config` flag,
+   default off to preserve today's behavior) once prompt work resumes on
+   `feat/policy-prompt-legal-budget` or its successor: a real-language
+   rationale field would make the visualizer's reasoning panel
+   meaningfully more useful for debugging *why* the model picked an
+   action, not just *what* it picked — at the cost of extra output
+   tokens and latency per call, and a slightly larger JSON schema to
+   parse/validate. Not started; no fix candidate written yet beyond this
+   note.
 
 ## Parallel work split (Day 3, starting 2026-08-05)
 
