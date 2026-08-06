@@ -80,7 +80,13 @@ submit: notebook _check-kaggle ## Build notebook and push to Kaggle (one-line su
 	@grep -q REPLACE_WITH_YOUR_USERNAME notebooks/kernel-metadata.json && { \
 	    echo "ERROR: edit notebooks/kernel-metadata.json and replace REPLACE_WITH_YOUR_USERNAME"; \
 	    exit 1; } || true
-	$(KAGGLE) kernels push -p notebooks/
+	@# The accelerator MUST be passed as a CLI flag. Writing it into the
+	@# notebook's metadata.kaggle.accelerator -- which is what
+	@# scripts/build_notebook.py does, and what the upstream starter does --
+	@# has no effect: Kaggle's push API reads only `enable_gpu` from
+	@# kernel-metadata.json. Measured 2026-08-06, see
+	@# docs/superpowers/experiments/kaggle-env-probe.md.
+	$(KAGGLE) kernels push -p notebooks/ $(shell $(VENV_PY) -c "import sys; sys.path.insert(0,'scripts'); import build_notebook as b; f=b.push_accelerator_flag(); print('--accelerator '+f if f else '')")
 	@echo ""
 	@echo "Pushed. Track it with:  make status"
 

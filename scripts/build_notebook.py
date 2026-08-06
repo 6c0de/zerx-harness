@@ -30,15 +30,96 @@ from typing import List
 #   "rtx6000"  — Nvidia RTX 6000 (g4-standard-48). ARC-AGI-3 exclusive,
 #                burns GPU quota faster — use only when you're confident.
 # ─────────────────────────────────────────────────────────────────────────────
-ACCELERATOR = "t4"
+ACCELERATOR = "rtx6000"
 
 # Internal mapping; don't edit unless Kaggle adds new options.
+#
+# `name` goes into the notebook's own metadata. Be aware that Kaggle's push
+# API **ignores it** — see `push_accelerator_flag()` below and
+# docs/superpowers/experiments/kaggle-env-probe.md. The values below are the
+# starter's; only the two marked `verified` have actually been observed to
+# be honoured by the API.
 _ACCELERATORS = {
-    "cpu":     {"name": "none",            "gpu": False},
-    "t4":      {"name": "nvidiaTeslaT4",   "gpu": True},
-    "p100":    {"name": "nvidiaTeslaP100", "gpu": True},
-    "rtx6000": {"name": "nvidiaRtx6000",   "gpu": True},
+    "cpu":     {"name": "none",            "gpu": False, "push": None},
+    "t4":      {"name": "nvidiaTeslaT4",   "gpu": True,  "push": "NvidiaTeslaT4"},
+    "p100":    {"name": "nvidiaTeslaP100", "gpu": True,  "push": "NvidiaTeslaP100"},
+    "rtx6000": {"name": "nvidiaRtx6000",   "gpu": True,  "push": "NvidiaRtxPro6000"},
 }
+
+# `machine_shape` values observed to actually be honoured by the push API.
+#
+# The starter's own accelerator name for the RTX card ("nvidiaRtx6000") is
+# NOT one of them: pushing with it yielded a Tesla P100, silently. The real
+# string is "NvidiaRtxPro6000", recovered by selecting the accelerator in
+# the Kaggle web UI and reading back the server's own metadata with
+# `kaggle kernels pull -m` — it appears in neither the starter nor the
+# Kaggle SDK's documented list (which knows only NvidiaTeslaT4,
+# NvidiaTeslaP100, Tpu1VmV38). See
+# docs/superpowers/experiments/kaggle-env-probe.md.
+#
+# Kept as a warn-list rather than a hard validation: Kaggle can add shapes
+# faster than this file learns about them, and refusing to push an unknown
+# value would be worse than pushing it with a warning. Silence is the thing
+# to avoid — an unrecognised value costs you the default GPU without saying so.
+_VERIFIED_ACCELERATORS = {"NvidiaTeslaT4", "NvidiaTeslaP100", "NvidiaRtxPro6000"}
+
+
+def push_accelerator_flag() -> str:
+    """The `--accelerator` argument `kaggle kernels push` needs, or "".
+
+    Selecting an accelerator by writing it into the notebook's
+    `metadata.kaggle.accelerator` — which is what this script (and the
+    upstream official starter) has always done — **does not work**. Kaggle's
+    push API reads exactly one GPU-related key from
+    `notebooks/kernel-metadata.json`, the `enable_gpu` bool, and nothing
+    reads the notebook's own accelerator field. The accelerator is carried
+    only by the CLI flag.
+
+    Measured 2026-08-06 with a controlled pair of runs
+    (docs/superpowers/experiments/kaggle-env-probe.md): pushing with
+    `--accelerator NvidiaTeslaT4` produced a Tesla T4, while pushing with
+    `--accelerator nvidiaRtx6000` produced a Tesla P100 — the default. The
+    flag works; that particular value does not, and fails silently.
+    """
+    return _ACCELERATORS[ACCELERATOR]["push"] or ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODEL WIRING (docs/superpowers/specs/2026-08-06-kaggle-p0-model-attach-design.md)
+#
+# Until these were set, a submission ran with no language model at all and
+# said nothing about it: kernel-metadata.json had an empty `model_sources`,
+# nothing here set ZERX_BACKEND, so `Config.backend` fell to its default
+# "fake", `select_backend` returned a `FakeModelBackend` with no scripted
+# responses, every generate() raised, and the agent played heuristics-only
+# through its own fallback chain. No crash, no error, just a meaningless
+# score (docs/HANDOFF.md, ARC-HANDOFF-001).
+# ─────────────────────────────────────────────────────────────────────────────
+ZERX_BACKEND = "gemma_kaggle"
+ZERX_PLATFORM = "kaggle"
+ZERX_GEMMA_BASE_URL = "http://localhost:8000/v1/chat/completions"
+
+# Kaggle Models handle for the weights, synced into
+# notebooks/kernel-metadata.json's `model_sources` by main() so the two can
+# never drift apart. Keep in step with scripts/build_probe_notebook.py's
+# MODEL_SOURCE — the probe must attach the same weights the submission does,
+# or its mount-path answer does not transfer.
+MODEL_SOURCE = "google/gemma-4/transformers/gemma-4-31b-it/1"
+
+# Filesystem path the attached Gemma weights mount at, under /kaggle/input.
+#
+# Deliberately None until Phase B. The Kaggle Models UI label
+# ("google/gemma-4/Transformers/gemma-4-31b-it") is an organizational path,
+# not a filesystem path — and separately is not a valid Hugging Face repo id
+# either (docs/HANDOFF.md, Day 2 item 2), so it cannot simply be guessed.
+# `notebooks/probe/probe.ipynb` (scripts/build_probe_notebook.py) reports the
+# real path; fill it in from that result.
+#
+# While it is None the generated notebook still builds — but refuses to play
+# on Kaggle, loudly and immediately. That refusal is the point: AGENTS.md
+# requires model initialization failures to "fail before gameplay rather than
+# degrading an entire evaluation silently", and shipping a submission that
+# quietly has no model is the exact failure this whole change exists to end.
+KAGGLE_MODEL_DIR: str | None = None
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_SRC = ROOT / "agent" / "my_agent.py"
@@ -197,11 +278,79 @@ def build() -> dict:
         RECORDINGS_DIR=/kaggle/working/server_recording
         \"\"\")
 
+            # ---- model readiness gate ----
+            # Resolve the backend exactly as MyAgent will, and refuse to play
+            # if it comes back as the no-op FakeModelBackend. AGENTS.md:
+            # "Model initialization failures and out-of-memory conditions must
+            # fail before gameplay rather than degrading an entire evaluation
+            # silently." Before this gate existed, a submission with no model
+            # attached was indistinguishable from a working one until the
+            # leaderboard came back.
+            #
+            # Run in-process (not via `!`) on purpose: a shell command's
+            # non-zero exit is swallowed by IPython, so only a real Python
+            # exception actually stops the notebook here.
+            import sys
+
+            KAGGLE_MODEL_DIR = MODEL_DIR_LITERAL
+            if KAGGLE_MODEL_DIR is None:
+                raise SystemExit(
+                    "KAGGLE_MODEL_DIR is not set in scripts/build_notebook.py, so "
+                    "no model weights have been located under /kaggle/input. "
+                    "Run notebooks/probe/probe.ipynb "
+                    "(scripts/build_probe_notebook.py) to resolve the real mount "
+                    "path, set the constant, rebuild, and push again. Refusing to "
+                    "play heuristics-only and report it as a scored run."
+                )
+            if not os.path.isdir(KAGGLE_MODEL_DIR):
+                raise SystemExit(
+                    f"KAGGLE_MODEL_DIR={KAGGLE_MODEL_DIR!r} does not exist. The "
+                    "model source is either not attached to this kernel or mounts "
+                    "elsewhere; check kernel-metadata.json's model_sources against "
+                    "the probe notebook's /kaggle/input listing."
+                )
+
+            sys.path.insert(0, '/kaggle/working/ARC-AGI-3-Agents')
+            os.environ['ZERX_BACKEND'] = 'ZERX_BACKEND_LITERAL'
+            os.environ['ZERX_PLATFORM'] = 'ZERX_PLATFORM_LITERAL'
+            os.environ['ZERX_GEMMA_BASE_URL'] = 'ZERX_GEMMA_BASE_URL_LITERAL'
+
+            from zerx.config import Config
+            from zerx.model_backend import select_backend
+
+            _resolved = Config.from_env()
+            _backend = select_backend(_resolved)
+            print("resolved backend:", type(_backend).__name__)
+            print("resolved config hash:", _resolved.config_hash())
+            print("resolved config:", _resolved.to_json())
+            if type(_backend).__name__ == 'FakeModelBackend':
+                raise SystemExit(
+                    "select_backend() resolved to FakeModelBackend, whose every "
+                    "generate() raises -- the agent would play heuristics-only and "
+                    "report a meaningless score. Refusing to start."
+                )
+
             # Run it. The gateway records every action and emits submission.parquet.
+            # ZERX_* are passed on the command line rather than left to the .env
+            # above: main.py runs in a separate process, and an explicit prefix
+            # does not depend on when the framework happens to call load_dotenv().
             !cd /kaggle/working/ARC-AGI-3-Agents && \\
                 MPLBACKEND=agg \\
+                ZERX_BACKEND=ZERX_BACKEND_LITERAL \\
+                ZERX_PLATFORM=ZERX_PLATFORM_LITERAL \\
+                ZERX_GEMMA_BASE_URL=ZERX_GEMMA_BASE_URL_LITERAL \\
                 python main.py --agent myagent
         """
+    )
+    # Substituted rather than f-string-interpolated: the cell body above
+    # contains literal braces (the AVAILABLE_AGENTS dict it writes out), which
+    # an f-string would try to evaluate.
+    run_cell_source = (
+        run_cell_source
+        .replace("MODEL_DIR_LITERAL", repr(KAGGLE_MODEL_DIR))
+        .replace("ZERX_BACKEND_LITERAL", ZERX_BACKEND)
+        .replace("ZERX_PLATFORM_LITERAL", ZERX_PLATFORM)
+        .replace("ZERX_GEMMA_BASE_URL_LITERAL", ZERX_GEMMA_BASE_URL)
     )
     run_cell = code_cell(run_cell_source)
 
@@ -278,15 +427,43 @@ def main() -> None:
           f"(accelerator: {ACCELERATOR})")
 
     # Keep notebooks/kernel-metadata.json in sync so the user never has to
-    # edit it just to flip CPU ↔ GPU.
+    # edit it just to flip CPU ↔ GPU, and so the attached weights can never
+    # silently drift away from what the run cell expects.
     if METADATA_PATH.exists():
-        meta = json.loads(METADATA_PATH.read_text())
-        wanted = _ACCELERATORS[ACCELERATOR]["gpu"]
-        if meta.get("enable_gpu") != wanted:
-            meta["enable_gpu"] = wanted
-            METADATA_PATH.write_text(json.dumps(meta, indent=2) + "\n")
-            print(f"[build_notebook] Synced enable_gpu={wanted} in "
+        meta = json.loads(METADATA_PATH.read_text(encoding="utf-8"))
+        changes = []
+
+        wanted_gpu = _ACCELERATORS[ACCELERATOR]["gpu"]
+        if meta.get("enable_gpu") != wanted_gpu:
+            meta["enable_gpu"] = wanted_gpu
+            changes.append(f"enable_gpu={wanted_gpu}")
+
+        if meta.get("model_sources") != [MODEL_SOURCE]:
+            meta["model_sources"] = [MODEL_SOURCE]
+            changes.append(f"model_sources=[{MODEL_SOURCE!r}]")
+
+        if changes:
+            METADATA_PATH.write_text(
+                json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+            print(f"[build_notebook] Synced {', '.join(changes)} in "
                   f"{METADATA_PATH.relative_to(ROOT)}")
+
+    flag = push_accelerator_flag()
+    if flag:
+        print(f"[build_notebook] Push with:  kaggle kernels push -p notebooks/ "
+              f"--accelerator {flag}")
+        if flag not in _VERIFIED_ACCELERATORS:
+            print(f"[build_notebook] WARNING: {flag!r} has never been observed to "
+                  f"work. Verified values: {sorted(_VERIFIED_ACCELERATORS)}. An "
+                  f"unrecognised value is ignored silently and you get the default "
+                  f"GPU instead — measured 2026-08-06, see "
+                  f"docs/superpowers/experiments/kaggle-env-probe.md.")
+
+    if KAGGLE_MODEL_DIR is None:
+        print("[build_notebook] WARNING: KAGGLE_MODEL_DIR is None — this notebook "
+              "will refuse to play on Kaggle. Run scripts/build_probe_notebook.py "
+              "first and set the constant from its /kaggle/input listing.")
 
 
 if __name__ == "__main__":

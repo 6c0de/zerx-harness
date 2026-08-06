@@ -132,6 +132,130 @@ def test_writefile_into_a_missing_directory_really_does_fail():
             handle.write("x = 1")
 
 
+def _run_cell_source() -> str:
+    """The cell that actually starts the scored run."""
+    sources = _cell_sources(build_notebook.build())
+    matches = [s for s in sources if "main.py --agent myagent" in s]
+    assert len(matches) == 1, "expected exactly one cell to launch the agent"
+    return matches[0]
+
+
+def test_run_cell_selects_a_real_backend_not_the_silent_fake_one():
+    """`Config.backend` defaults to "fake", whose `select_backend` returns a
+    `FakeModelBackend` with no scripted responses — every `generate()` raises
+    and the agent plays heuristics-only through its own fallback chain,
+    without crashing. That is precisely how a submission can score ~nothing
+    while looking healthy (docs/HANDOFF.md, ARC-HANDOFF-001). The run cell
+    must set a real backend explicitly.
+    """
+    source = _run_cell_source()
+
+    assert build_notebook.ZERX_BACKEND != "fake"
+    assert f"ZERX_BACKEND={build_notebook.ZERX_BACKEND}" in source
+    assert f"ZERX_PLATFORM={build_notebook.ZERX_PLATFORM}" in source
+    assert build_notebook.ZERX_PLATFORM == "kaggle"
+
+
+def test_run_cell_refuses_to_play_when_the_backend_resolves_to_fake():
+    """A readiness gate, not just an env var: the env var could be right while
+    the resolution still lands on the fake backend. The gate must run before
+    the agent starts, and must raise rather than merely print — IPython
+    swallows a shell command's non-zero exit.
+    """
+    source = _run_cell_source()
+
+    assert "select_backend" in source, "run cell never resolves the backend"
+    assert "FakeModelBackend" in source, "run cell never checks for the fake backend"
+    assert "raise SystemExit" in source, "gate must abort, not just warn"
+
+    gate_at = source.index("select_backend")
+    launch_at = source.index("main.py --agent myagent")
+    assert gate_at < launch_at, "the readiness gate must precede the run"
+
+
+def test_run_cell_refuses_to_play_when_no_model_directory_is_configured():
+    """Until the probe resolves the real /kaggle/input mount path,
+    KAGGLE_MODEL_DIR is None and the notebook must decline to run at all —
+    a submission that quietly has no weights is the failure being fixed.
+    """
+    source = _run_cell_source()
+    assert "KAGGLE_MODEL_DIR" in source
+    assert repr(build_notebook.KAGGLE_MODEL_DIR) in source
+    assert "os.path.isdir(KAGGLE_MODEL_DIR)" in source
+
+
+def test_kernel_metadata_attaches_weights_and_has_a_real_id():
+    metadata = json.loads(build_notebook.METADATA_PATH.read_text(encoding="utf-8"))
+
+    assert "REPLACE_WITH_YOUR_USERNAME" not in metadata["id"]
+    assert metadata["id"].count("/") == 1, "kernel id must be <username>/<slug>"
+    assert metadata["model_sources"], "no model attached: the agent would run modelless"
+    assert metadata["model_sources"] == [build_notebook.MODEL_SOURCE]
+    # Internet stays off; nothing may be downloaded at evaluation time.
+    assert metadata["enable_internet"] is False
+
+
+def test_accelerator_matches_the_documented_arc_agi_3_target():
+    """AGENTS.md targets the ARC-AGI-3-exclusive RTX Pro 6000 (48GB). The
+    starter's default of 2x16GB T4 cannot hold this model at any precision
+    we are willing to run.
+    """
+    assert build_notebook.ACCELERATOR == "rtx6000"
+    kaggle_meta = build_notebook.build()["metadata"]["kaggle"]
+    assert kaggle_meta["accelerator"] == "nvidiaRtx6000"
+    assert kaggle_meta["isGpuEnabled"] is True
+    assert kaggle_meta["isInternetEnabled"] is False
+
+
+def test_accelerator_is_exposed_as_a_push_flag_not_only_notebook_metadata():
+    """Kaggle's push API reads only `enable_gpu` from kernel-metadata.json and
+    ignores the notebook's own `metadata.kaggle.accelerator` entirely, so
+    selecting a GPU that way silently does nothing — measured 2026-08-06,
+    see docs/superpowers/experiments/kaggle-env-probe.md. The accelerator
+    must reach the CLI as a `--accelerator` argument.
+    """
+    assert build_notebook.push_accelerator_flag(), (
+        "a GPU accelerator must produce a --accelerator flag for the push"
+    )
+    # kernel-metadata.json carries no accelerator key at all; asserting it
+    # stays absent keeps anyone from "fixing" this by adding one there, which
+    # would look right and do nothing.
+    metadata = json.loads(build_notebook.METADATA_PATH.read_text(encoding="utf-8"))
+    assert "accelerator" not in metadata
+
+
+def test_cpu_accelerator_produces_no_push_flag(monkeypatch):
+    monkeypatch.setattr(build_notebook, "ACCELERATOR", "cpu")
+    assert build_notebook.push_accelerator_flag() == ""
+
+
+def test_rtx6000_pushes_the_string_kaggle_actually_honours():
+    """The starter's own name for this card, "nvidiaRtx6000", is silently
+    ignored by the push API and yields a Tesla P100 instead. The value that
+    works is "NvidiaRtxPro6000", recovered from the server's own metadata
+    after selecting the accelerator in the Kaggle web UI. Both were measured
+    2026-08-06 — see docs/superpowers/experiments/kaggle-env-probe.md.
+    """
+    assert build_notebook._ACCELERATORS["rtx6000"]["push"] == "NvidiaRtxPro6000"
+    assert build_notebook.push_accelerator_flag() in build_notebook._VERIFIED_ACCELERATORS
+
+
+def test_probe_and_submission_request_the_same_card():
+    """The probe's answers only transfer if it ran on the submission's card."""
+    import build_probe_notebook
+
+    assert build_probe_notebook.PUSH_ACCELERATOR == build_notebook.push_accelerator_flag()
+
+
+def test_run_cell_installs_nothing_from_the_network():
+    """Internet is disabled at evaluation time; every install must be offline."""
+    for source in _cell_sources(build_notebook.build()):
+        if "pip install" in source:
+            assert "--no-index" in source, (
+                f"network-dependent install in a submission cell:\n{source}"
+            )
+
+
 def test_bundle_contains_no_cerebras_endpoint_or_credential_reference():
     """Secret hygiene must survive the lazy-import change: the endpoint and
     key name still must not appear anywhere in the shipped bundle except
