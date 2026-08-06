@@ -37,6 +37,8 @@ _CONFIG_ENV_MAP = {
     "model_revision": "ZERX_MODEL_REVISION",
     "backend": "ZERX_BACKEND",
     "platform": "ZERX_PLATFORM",
+    "competition_mode": "ZERX_COMPETITION_MODE",
+    "internet_enabled": "ZERX_INTERNET_ENABLED",
     "exact_state_suppression_on": "ZERX_EXACT_STATE_SUPPRESSION_ON",
     "duck_objects_on": "ZERX_DUCK_OBJECTS_ON",
     "candidate_count": "ZERX_CANDIDATE_COUNT",

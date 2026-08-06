@@ -23,12 +23,32 @@ def _env_bool(env: Mapping[str, str], key: str, default: bool) -> bool:
 
 def _env_int(env: Mapping[str, str], key: str, default: int) -> int:
     raw = env.get(key)
-    return default if raw is None else int(raw)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        # A bare `ValueError: invalid literal for int()` names neither the
+        # variable nor the value, and it escapes from MyAgent.__init__ --
+        # outside choose_action's catch-all -- so one typo aborted the whole
+        # game with an unattributable message. Raising loudly (rather than
+        # silently defaulting) is deliberate: a silent fallback would hide a
+        # misconfigured experiment and make its results quietly wrong.
+        raise ValueError(
+            f"{key}={raw!r} is not a valid integer (expected e.g. {key}=100)"
+        ) from None
 
 
 def _env_float(env: Mapping[str, str], key: str, default: float) -> float:
     raw = env.get(key)
-    return default if raw is None else float(raw)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(
+            f"{key}={raw!r} is not a valid number (expected e.g. {key}=0.8)"
+        ) from None
 
 
 def _env_str(env: Mapping[str, str], key: str, default: str) -> str:
@@ -65,6 +85,11 @@ class Config:
     model_revision: str = "gemma-4-31b-it"
     backend: str = "fake"  # "fake" | "cerebras_dev" | "gemma_local" | "gemma_kaggle"
     platform: str = "local"  # "local" | "colab" | "kaggle"
+    competition_mode: bool = False  # scored competition run. Together
+    # with internet_enabled these complete AGENTS.md's three required
+    # cerebras_dev lockout conditions (ARC-HANDOFF-006); only the
+    # platform=="kaggle" one existed before.
+    internet_enabled: bool = True
     exact_state_suppression_on: bool = False
     duck_objects_on: bool = False  # exp-150-duck-tools Variants A+B (zerx/scene.py) — off by default
     candidate_count: int = 1
@@ -75,11 +100,20 @@ class Config:
     # default, never read outside agent/my_agent.py's construction.
 
     def __post_init__(self) -> None:
-        if self.backend == "cerebras_dev" and self.platform == "kaggle":
-            raise ValueError(
-                "cerebras_dev is a development-only backend and must never be "
-                "selected on platform=kaggle"
-            )
+        if self.backend == "cerebras_dev":
+            # AGENTS.md requires rejection "whenever platform=kaggle,
+            # competition mode is active, or internet is disabled". Only the
+            # first of the three was ever implemented (ARC-HANDOFF-006).
+            for condition, reason in (
+                (self.platform == "kaggle", "platform=kaggle"),
+                (self.competition_mode, "competition mode is active"),
+                (not self.internet_enabled, "internet is disabled"),
+            ):
+                if condition:
+                    raise ValueError(
+                        "cerebras_dev is a development-only backend and must "
+                        f"never be selected when {reason}"
+                    )
         if self.budget_soft_cap <= 0:
             raise ValueError("budget_soft_cap must be positive")
         if self.candidate_count < 1:
@@ -126,6 +160,12 @@ class Config:
             model_revision=_env_str(env, "ZERX_MODEL_REVISION", cls.model_revision),
             backend=_env_str(env, "ZERX_BACKEND", cls.backend),
             platform=_env_str(env, "ZERX_PLATFORM", cls.platform),
+            competition_mode=_env_bool(
+                env, "ZERX_COMPETITION_MODE", cls.competition_mode
+            ),
+            internet_enabled=_env_bool(
+                env, "ZERX_INTERNET_ENABLED", cls.internet_enabled
+            ),
             exact_state_suppression_on=_env_bool(
                 env, "ZERX_EXACT_STATE_SUPPRESSION_ON", cls.exact_state_suppression_on
             ),

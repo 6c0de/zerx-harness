@@ -13,9 +13,19 @@ from typing import FrozenSet, Optional, Sequence, Tuple
 from zerx.budget import BudgetSignal, evaluate_budget
 from zerx.config import Config
 from zerx.heuristics import ClickCandidate, DeadSignatureTracker, rank_click_candidates
-from zerx.memory import MemoryState, maybe_refresh
+from zerx.memory import (
+    MemoryState,
+    StructuredMemoryState,
+    maybe_refresh,
+    render_for_prompt,
+)
 from zerx.model_backend import ModelBackend
 from zerx.perception import PerceptionResult, perceive
+from zerx.transitions import (
+    TransitionRecord,
+    render_transition_history,
+    summarize_transitions,
+)
 from zerx.types import Action, ActionName
 
 
@@ -164,6 +174,8 @@ def build_prompt(
     candidates: Sequence[ClickCandidate] = (),
     legal_actions: FrozenSet[ActionName] = frozenset(),
     budget: Optional[BudgetSignal] = None,
+    recent_transitions: Sequence["TransitionRecord"] = (),
+    structured_memory: Optional[StructuredMemoryState] = None,
 ) -> str:
     """STRATEGY.md §8: show the model its top ranked click candidates, not
     just the raw object table, so it can select ACTION6 by label instead of
@@ -175,6 +187,14 @@ def build_prompt(
     strategy signal (AGENTS.md step 7: never a forced/invented move, just a
     hint). Deliberately does not describe what ACTION1-ACTION5 *do* —
     AGENTS.md forbids hard-coding their semantics since they vary by game.
+
+    `recent_transitions` closes the evidence loop: without it the model saw
+    the board and the legal actions every step but never the *outcome* of
+    anything it had already tried, so it could not tell a no-op from a
+    useful move and had no reason to stop re-proposing a dead action. Since
+    ACTION1-ACTION5's meanings are game-specific and deliberately not
+    described here, observed outcomes are the only way the model can ever
+    learn what they do.
     """
     shown_objects = perception.objects[:_MAX_PROMPT_OBJECTS]
     object_lines = (
@@ -207,6 +227,12 @@ def build_prompt(
         if budget is not None
         else "(no budget signal)"
     )
+    history_lines = render_transition_history(recent_transitions)
+    structured_block = (
+        f"\nStructured memory:\n{render_for_prompt(structured_memory)}\n"
+        if structured_memory is not None
+        else ""
+    )
     return (
         "You are playing a grid-based puzzle game.\n"
         f"Grid:\n{perception.ascii_grid}\n\n"
@@ -215,7 +241,12 @@ def build_prompt(
         f"these exact coordinates over guessing):\n{candidate_lines}\n\n"
         f"Legal actions this turn: {legal_action_names}\n\n"
         f"Action budget: {budget_line}\n\n"
-        f"What you've learned so far: {memory.summary or '(nothing yet)'}\n\n"
+        "What your recent actions actually did (the only evidence you have "
+        f"for what each action means in this game):\n{history_lines}\n\n"
+        f"What you've learned so far: {memory.summary or '(nothing yet)'}\n"
+        f"{structured_block}\n"
+        "Do not repeat an action that the history above shows changed "
+        "nothing from this same board state; try a different one instead.\n"
         'Respond with exactly one JSON object: {"action": "<ACTION_NAME>", '
         '"data": {"x": <int>, "y": <int>}} (data only required for ACTION6), '
         "using one of the legal actions listed above."
@@ -230,6 +261,8 @@ def decide(
     config: Config,
     backend: ModelBackend,
     actions_taken: int,
+    recent_transitions: Sequence[TransitionRecord] = (),
+    structured_memory: Optional[StructuredMemoryState] = None,
 ) -> Tuple[Decision, MemoryState]:
     """Implements the required control flow: terminal check, perception,
     heuristics, one bounded model call with deterministic repair, budget as
@@ -262,10 +295,17 @@ def decide(
 
     new_memory = memory
     if config.memory_on:
+        # A real summarizer, not the previous `lambda prev, ctx: prev`
+        # no-op that made memory_on a flag controlling nothing
+        # (ARC-HANDOFF-003) and pinned every prompt to "What you've learned
+        # so far: (nothing yet)". Derived from the transition ledger rather
+        # than a second model call, so it adds zero latency and zero action
+        # cost -- AGENTS.md warns specifically against turning reflection
+        # into an unbounded extra reasoning loop.
         new_memory = maybe_refresh(
             memory,
             recent_context=perception.ascii_grid,
-            summarizer=lambda prev, ctx: prev,  # deterministic no-op for the local skeleton
+            summarizer=lambda prev, ctx: summarize_transitions(recent_transitions) or prev,
             refresh_interval=config.memory_refresh_interval,
         )
 
@@ -286,11 +326,28 @@ def decide(
         try:
             from zerx.candidates import generate_candidates, select_candidate
 
-            prompt = build_prompt(perception, new_memory, candidates, legal_actions, budget)
+            prompt = build_prompt(
+                perception,
+                new_memory,
+                candidates,
+                legal_actions,
+                budget,
+                recent_transitions=recent_transitions,
+                structured_memory=structured_memory,
+            )
             model_candidates = generate_candidates(
                 backend, prompt, legal_actions, config.candidate_count
             )
-            best = select_candidate(model_candidates, config)
+            # `arbiter_on` gated on `config.arbiter_on and arbiter is not
+            # None`, but this call site never passed an arbiter, so the flag
+            # was unsatisfiable (ARC-HANDOFF-003). Pass the same backend as
+            # the arbiter when the flag is on; `select_candidate` still
+            # falls back to the deterministic pick on any arbiter failure,
+            # and the flag stays off by default so this costs nothing
+            # unless deliberately enabled.
+            best = select_candidate(
+                model_candidates, config, arbiter=backend if config.arbiter_on else None
+            )
             parsed = best.parsed if best is not None else None
         except Exception as exc:
             parsed = None
@@ -298,7 +355,15 @@ def decide(
     else:
         try:
             raw_response = backend.generate(
-                build_prompt(perception, new_memory, candidates, legal_actions, budget)
+                build_prompt(
+                perception,
+                new_memory,
+                candidates,
+                legal_actions,
+                budget,
+                recent_transitions=recent_transitions,
+                structured_memory=structured_memory,
+            )
             )
             parsed = parse_action(raw_response, legal_actions)
         except Exception as exc:

@@ -1616,3 +1616,219 @@ suppression off.
   lockout, the literal-only secret scanner) — all still open, all
   deliberately out of this branch's scope per the owner's split.
 
+
+---
+
+## Branch `newest-update`, round 2 — 2026-08-06
+
+Scope was widened by the human owner from round 1's "everything except the
+Kaggle blockers" to **all remaining open items**, explicitly to maximize
+scored performance before submitting.
+
+- Suite: **428 passed, 0 failed** (round 1 ended at 392; +36 net-new tests).
+  A bare `pytest` from the repo root now works, so that is the command.
+
+### [P0] ARC-HANDOFF-010 — The agent was never told what its own actions did
+
+**Status:** **SOLVED** · **Category:** Scoring / core capability
+
+#### Problem
+Every prompt showed the current board, the object table, the ranked click
+candidates and the legal actions — and nothing about the *outcome* of
+anything the agent had already tried. `TransitionLedger` had been recording
+`changed_pixels`, `change_bbox`, `score_delta`, `terminal` and
+`repeated_state` for every step since Day 1; **nothing ever read them.**
+
+This is the single largest capability gap found so far, and it compounds
+with a deliberate design constraint: `build_prompt` intentionally does not
+describe what `ACTION1`–`ACTION5` do, because AGENTS.md forbids hard-coding
+semantics that vary per game. Observed outcomes were therefore the *only*
+channel through which the model could ever learn what an action means — and
+that channel was closed. The model could not distinguish a no-op from a
+useful move and had no reason to stop re-proposing a dead action.
+
+#### Fix
+`zerx/transitions.py` gains `render_transition_history(records, limit=8)`,
+rendered into `build_prompt` under "What your recent actions actually did",
+followed by an explicit instruction not to repeat an action the history
+shows changed nothing. `MyAgent` keeps the last 20 records in a deque and
+passes them through `decide(recent_transitions=...)`. Bounded to 8 lines in
+the prompt so it stays small next to the 64x64 grid.
+
+#### Verification
+Live `vc33` run, real engine, reconstructed from the exported trace:
+```
+- ACTION6(x=47, y=46) -> changed 40 cells in region (x 1-3, y 2-4)
+- ACTION6(x=31, y=0)  -> changed NOTHING on the board
+- ACTION6(x=29, y=0)  -> changed 40 cells in region (x 1-3, y 2-4)
+```
+14 tests in the new `tests/test_evidence_loop.py`.
+
+---
+
+### [P1] ARC-HANDOFF-003 — Four ablation flags cannot change behaviour
+
+**Status:** **SOLVED** (was UNRESOLVED) · **Source:** ARC-AUDIT-008/009/010/011
+
+All four are now wired rather than removed, because each had a real use
+once the evidence loop above existed to feed it:
+
+- **`memory_on`** (defaulted `True` while controlling nothing) — the
+  `summarizer=lambda prev, ctx: prev` no-op is replaced by
+  `zerx/transitions.summarize_transitions`, which aggregates the ledger into
+  per-action verdicts ("changed the board" vs "did nothing every time
+  tried"). Deliberately **model-free**: AGENTS.md warns against turning
+  reflection into a second unbounded reasoning loop, so this costs no extra
+  call and no latency. It refuses to write off an action that worked even
+  once — a single no-op is weak evidence.
+- **`structured_memory_on`** — `render_for_prompt` had zero production
+  callers, so the flag ran a full `perceive()` flood-fill every action to
+  feed a no-op whose output was discarded. It now both feeds a real
+  summarizer (confirmed rules / notable failures derived from the same
+  ledger) and reaches the prompt via `decide(structured_memory=...)`.
+- **`arbiter_on`** — was unsatisfiable: `select_candidate` gated on
+  `config.arbiter_on and arbiter is not None`, and `decide()` passed no
+  arbiter. It now passes the backend as the arbiter when the flag is on.
+  Still off by default, and `select_candidate` still falls back to the
+  deterministic pick on any arbiter failure.
+- **`duck_objects_on`** — appeared only in `config.py` and the ablation
+  matrix. It now selects whether each transition gets a semantic label from
+  `zerx/scene.py`'s `classify_transition` (`HUD_ONLY`, `OBJECT_MOVE`,
+  `RECOLOR_OR_TRANSFORM`, …) inside the evidence block. Off by default: the
+  classifier segments and boundary-traces both frames, which is real
+  per-action CPU. Injected as a callable so `zerx/transitions.py` never
+  imports `zerx/scene.py`, and wrapped so a classifier failure degrades to
+  "no label" instead of breaking the evidence loop it annotates.
+
+A guard test (`tests/test_run_ablation.py`) now asserts every key in
+`_CONFIG_ENV_MAP` is read somewhere in `zerx/` or `agent/`, with a short
+allowlist for the three genuinely non-behavioural fields (`experiment_id`
+is metadata; `competition_mode`/`internet_enabled` are validation-only) —
+and it separately proves those two really do enforce the lockout rather
+than merely being excused.
+
+---
+
+### [P1] ARC-HANDOFF-002 — Concurrent game threads share mutable `GameAction` singletons
+
+**Status:** **SOLVED** (was UNRESOLVED) · **Source:** ARC-AUDIT-007
+
+The handoff offered two options: run one game per process (costs wall-clock
+against the ~9 h budget) or patch the vendored framework (means shipping a
+modified framework). **Neither was taken** — a third option closes the
+window with no framework patch and no loss of concurrency.
+
+The hazard is the gap between `choose_action` calling `.set_data(...)` on
+the shared enum member and `do_action_request` reading `action.action_data`
+later. `MyAgent` now stores its own intended action in `_pending_submit` and
+overrides `take_action` to re-apply it **and** call through to the read,
+both inside one process-wide `_ACTION_SUBMIT_LOCK`. Only the submit itself
+is serialized; perception, the model call and the rest of `choose_action`
+stay fully concurrent.
+
+The exception path clears `_pending_submit`/`_last_reasoning`, so a
+crash-recovery action can never resubmit the previous step's payload.
+
+`tests/test_concurrency_safety.py`: four agents on four threads, each
+corrupting the shared singleton before its own submit, asserting every
+submitted coordinate belongs to the agent that chose it; plus a test that
+the lock is genuinely *held* at the moment the environment is stepped —
+because the re-apply alone would pass single-threaded, and the lock is what
+makes it correct under `Swarm`.
+
+---
+
+### [P0] ARC-HANDOFF-001 — The Kaggle submission notebook contains no model
+
+**Status:** **SOLVED IN CODE — NOT YET VERIFIED ON KAGGLE** · **Source:** ARC-AUDIT-003/015
+
+All four recommended-fix steps are implemented:
+
+1. `ACCELERATOR` is `"rtx6000"`, not `"t4"`.
+2. `notebooks/kernel-metadata.json`'s `model_sources` is populated, and is
+   now *derived* from a single constant in `scripts/build_notebook.py`
+   rather than hand-edited, so it cannot silently drift back to `[]`.
+3. New offline vLLM install cell (`pip install --no-index --find-links`
+   against an attached wheel dataset) and a serve cell that resolves the
+   model directory under `/kaggle/input` by globbing for `config.json` —
+   rather than hardcoding a version number that changes on re-publish — and
+   launches vLLM with the **Colab-validated 8-bit fp8 flags**, not
+   re-derived ones.
+4. `ZERX_BACKEND=gemma_kaggle`, `ZERX_PLATFORM=kaggle`,
+   `ZERX_MODEL_REVISION` and `ZERX_GEMMA_BASE_URL` are exported on the
+   `main.py --agent myagent` line.
+5. A readiness gate raises `SystemExit` if the server never answers. This is
+   the point of the whole item: the old failure mode was silent
+   heuristics-only play, and a loud early failure is strictly better than a
+   meaningless score.
+
+Tests: the built bundle's `select_backend(Config.from_env(kaggle_env))`
+returns `GemmaModelBackend`; the run cell exports the env vars; every `pip
+install` in the notebook carries `--no-index`; `model_sources` is non-empty;
+`enable_internet` is `False`.
+
+**Two things a human must do before pushing — this is not finished
+otherwise:**
+- `KAGGLE_WHEEL_DATASET` is empty. `scripts/build_notebook.py` prints a
+  warning at build time and the notebook hard-fails at run time rather than
+  degrading, but a vLLM wheel dataset must actually be built, attached, and
+  named in that constant.
+- `KAGGLE_MODEL_SOURCE` is set to the documented handle
+  `google/gemma-4/transformers/gemma-4-31b-it`. **Confirm the exact string
+  in Kaggle's own "Add Input" panel** — it could not be verified from this
+  environment, and neither could any of the serving behaviour.
+- `kernel-metadata.json`'s `id` still says `REPLACE_WITH_YOUR_USERNAME`.
+
+---
+
+### [P3] ARC-HANDOFF-005 — Root `pytest` broken, marks unregistered
+
+**Status:** **SOLVED.** New root `pytest.ini` with `testpaths = tests` and
+both marks registered. A bare `pytest` from the repo root now collects only
+`tests/` and passes (428), with no `PytestUnknownMarkWarning`, so AGENTS.md's
+documented command works as written and a typo'd `-m` name is an error
+instead of silently selecting nothing.
+
+---
+
+### [P3] ARC-HANDOFF-006 — Config/scanner hardening
+
+**Status:** **SOLVED**, all three items.
+
+1. `_env_int`/`_env_float` re-raise with the offending variable *and* value
+   named (`ZERX_BUDGET_SOFT_CAP='abc' is not a valid integer`). Raising, not
+   silently defaulting — a silent fallback would hide a misconfigured
+   experiment and make its results quietly wrong.
+2. The cerebras_dev lockout now implements all three documented conditions
+   (`platform=kaggle`, competition mode active, internet disabled) via two
+   new `Config` fields, with a test per condition.
+3. `zerx/secret_scan.py` gains value-based patterns (`csk-`, `sk-`, bearer
+   headers, credentials assigned to api-key/token variables) on top of the
+   two name-based ones — a leaked key literal pasted without its variable
+   name previously shipped clean. A test asserts the scanner does not flag
+   its own pattern definitions, since the build gate scans every bundled
+   zerx module.
+
+---
+
+### Config changes worth knowing
+
+New fields: `max_actions`, `max_wall_seconds`, `competition_mode`,
+`internet_enabled`. Changed default: `budget_soft_cap` 50 → 400.
+**`Config.config_hash()` therefore differs from every pre-`newest-update`
+record** — experiment records across that boundary are not hash-comparable.
+
+### Still not done
+
+- **No Gemma-backed run has been made.** Everything above is verified
+  against the real local engine with `backend=fake`, unit tests, and the
+  built notebook's contents. The precision, throughput and per-action
+  latency of the Kaggle serving path remain unmeasured.
+- **Time one Gemma action on the target card before submitting**, then set
+  `ZERX_MAX_ACTIONS` from that measurement. ~25 games × 400 actions ≈ 10,000
+  calls; at 1.5–3 s each that is 4–8 h against a ~9 h limit. The 400 default
+  is a starting point, not a calibrated value.
+- `vc33`'s all-`ACTION6` heuristic play still concentrates on row `y=0`
+  (`exp-150-duck-tools` Variant A scope). `duck_objects_on` now at least
+  labels those transitions `HUD_ONLY` in the evidence block, which is the
+  information needed to act on it, but nothing yet acts on it.

@@ -30,7 +30,32 @@ from typing import List
 #   "rtx6000"  — Nvidia RTX 6000 (g4-standard-48). ARC-AGI-3 exclusive,
 #                burns GPU quota faster — use only when you're confident.
 # ─────────────────────────────────────────────────────────────────────────────
-ACCELERATOR = "t4"
+ACCELERATOR = "rtx6000"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODEL ATTACHMENT (ARC-HANDOFF-001)
+#
+# Without these the notebook runs with no language model at all: Config.backend
+# falls to its default "fake", select_backend returns FakeModelBackend(), every
+# generate() raises, and the agent silently plays heuristics-only. No crash,
+# just a near-zero score — the hardest possible failure to notice.
+#
+# `KAGGLE_MODEL_SOURCE` is written into notebooks/kernel-metadata.json's
+# `model_sources` and must be the exact handle Kaggle shows in the model's
+# "Add Input" panel (owner/model/framework/variation). `KAGGLE_WHEEL_DATASET`
+# must be a dataset containing a vLLM wheel and its dependencies, since
+# internet is disabled at evaluation time and nothing may be downloaded then.
+#
+# VERIFY BOTH IN THE KAGGLE UI BEFORE PUSHING. A wrong handle fails at attach
+# time (loud, fine); a missing one fails silently into heuristics-only (not
+# fine), which is why the generated run cell hard-fails instead of continuing.
+# ─────────────────────────────────────────────────────────────────────────────
+KAGGLE_MODEL_SOURCE = "google/gemma-4/transformers/gemma-4-31b-it"
+KAGGLE_WHEEL_DATASET = ""  # e.g. "yourname/vllm-offline-wheels"; "" = not attached
+
+# Served model name the agent asks for. Must match ZERX_MODEL_REVISION, which
+# Config defaults to the same string.
+SERVED_MODEL_NAME = "gemma-4-31b-it"
 
 # Internal mapping; don't edit unless Kaggle adds new options.
 _ACCELERATORS = {
@@ -116,6 +141,119 @@ def build() -> dict:
         "    arc-agi python-dotenv"
     )
 
+    # vLLM must come from an attached dataset: internet is disabled at
+    # evaluation time and nothing may be downloaded then (AGENTS.md's Kaggle
+    # gate). `--no-index` is not optional — it is what proves this install
+    # cannot reach the network.
+    install_vllm_cell = code_cell(
+        dedent(
+            f"""\
+            import os, glob
+
+            WHEEL_DATASET = {KAGGLE_WHEEL_DATASET!r}
+            if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
+                if not WHEEL_DATASET:
+                    raise SystemExit(
+                        "No vLLM wheel dataset configured. Set KAGGLE_WHEEL_DATASET in "
+                        "scripts/build_notebook.py and attach it, or the agent runs "
+                        "with no model at all (ARC-HANDOFF-001)."
+                    )
+                wheel_dir = f"/kaggle/input/{{WHEEL_DATASET.split('/')[-1]}}"
+                if not glob.glob(os.path.join(wheel_dir, "*.whl")):
+                    raise SystemExit(f"No wheels found under {{wheel_dir}}")
+                os.system(
+                    f"pip install --no-index --find-links {{wheel_dir}} vllm"
+                )
+            """
+        )
+    )
+
+    serve_model_cell = code_cell(
+        dedent(
+            f"""\
+            import glob, os, subprocess, time, urllib.request
+
+            MODEL_SOURCE = {KAGGLE_MODEL_SOURCE!r}
+            SERVED_NAME = {SERVED_MODEL_NAME!r}
+            GEMMA_PORT = 8000
+            VLLM_LOG_PATH = "/kaggle/working/vllm_server.log"
+
+            def resolve_model_dir():
+                \"\"\"Kaggle mounts an attached model under /kaggle/input/<model>/
+                <framework>/<variation>/<version>. Resolve it by globbing for the
+                directory that actually contains a config.json rather than
+                hardcoding a version number that changes when the model is
+                re-published.\"\"\"
+                for candidate in sorted(glob.glob("/kaggle/input/**/config.json", recursive=True)):
+                    return os.path.dirname(candidate)
+                return None
+
+            if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
+                model_dir = resolve_model_dir()
+                if model_dir is None:
+                    raise SystemExit(
+                        "No model found under /kaggle/input. The notebook would run "
+                        "heuristics-only with no model (ARC-HANDOFF-001). Attach "
+                        f"{{MODEL_SOURCE}} as a model input and re-run."
+                    )
+                print("Serving model from:", model_dir)
+
+                # 8-bit dynamic FP8, matching the precision decision validated on
+                # Colab (docs/HANDOFF.md, "Colab/Kaggle quantization decision"):
+                # this card has 48GB and bf16 weights are ~61.4GB, so quantization
+                # is mandatory, and vLLM's in-flight bitsandbytes mode is 4-bit
+                # only. Do not re-derive these flags — they are the Colab-verified
+                # ones.
+                vllm_log = open(VLLM_LOG_PATH, "w")
+                vllm_proc = subprocess.Popen(
+                    [
+                        "python", "-m", "vllm.entrypoints.openai.api_server",
+                        "--model", model_dir,
+                        "--served-model-name", SERVED_NAME,
+                        "--port", str(GEMMA_PORT),
+                        "--quantization", "fp8",
+                        "--dtype", "bfloat16",
+                        "--max-model-len", "8192",
+                        "--gpu-memory-utilization", "0.90",
+                    ],
+                    stdout=vllm_log,
+                    stderr=subprocess.STDOUT,
+                )
+
+                def tail_log(n=60):
+                    vllm_log.flush()
+                    with open(VLLM_LOG_PATH) as f:
+                        return "".join(f.readlines()[-n:])
+
+                # Readiness gate. A server that never comes up must be a loud,
+                # early failure -- proceeding would spend the entire run playing
+                # heuristics-only and report a meaningless score.
+                ready = False
+                for i in range(240):
+                    if vllm_proc.poll() is not None:
+                        print(tail_log())
+                        raise SystemExit(
+                            f"vLLM exited early with code {{vllm_proc.returncode}}"
+                        )
+                    try:
+                        urllib.request.urlopen(
+                            f"http://localhost:{{GEMMA_PORT}}/v1/models", timeout=2
+                        )
+                        ready = True
+                        print("vLLM server ready")
+                        break
+                    except Exception:
+                        if i % 12 == 0:
+                            print(f"waiting on vLLM ({{i * 5}}s)...")
+                        time.sleep(5)
+                if not ready:
+                    print(tail_log())
+                    raise SystemExit("vLLM server did not become ready; refusing to "
+                                     "run heuristics-only")
+            """
+        )
+    )
+
     # Bundle zerx/*.py (top-level modules only — never zerx/backends/, the
     # Cerebras dev-only module) so `agent/my_agent.py`'s `from zerx.config
     # import Config` etc. resolve on Kaggle, where internet is disabled and
@@ -198,11 +336,21 @@ def build() -> dict:
         \"\"\")
 
             # Run it. The gateway records every action and emits submission.parquet.
+            # ZERX_BACKEND/ZERX_PLATFORM are what make select_backend return the
+            # real GemmaModelBackend instead of FakeModelBackend — without them
+            # Config.backend stays at its "fake" default and the whole run is
+            # heuristics-only (ARC-HANDOFF-001). ZERX_PLATFORM=kaggle also arms
+            # Config's cerebras_dev lockout.
             !cd /kaggle/working/ARC-AGI-3-Agents && \\
                 MPLBACKEND=agg \\
+                ZERX_BACKEND=gemma_kaggle \\
+                ZERX_PLATFORM=kaggle \\
+                ZERX_MODEL_REVISION=__SERVED_MODEL_NAME__ \\
+                ZERX_GEMMA_BASE_URL=http://localhost:8000/v1/chat/completions \\
+                ZERX_EXPERIMENT_ID=kaggle-submission \\
                 python main.py --agent myagent
         """
-    )
+    ).replace("__SERVED_MODEL_NAME__", SERVED_MODEL_NAME)
     run_cell = code_cell(run_cell_source)
 
     dummy_submission_cell = code_cell(
@@ -261,9 +409,11 @@ def build() -> dict:
                 "`make submit`."
             ),
             install_cell,
+            install_vllm_cell,
             mkdir_cell,
             *zerx_write_cells,
             write_agent_cell,
+            serve_model_cell,
             run_cell,
             dummy_submission_cell,
         ],
@@ -281,12 +431,37 @@ def main() -> None:
     # edit it just to flip CPU ↔ GPU.
     if METADATA_PATH.exists():
         meta = json.loads(METADATA_PATH.read_text())
+        changed = False
+
         wanted = _ACCELERATORS[ACCELERATOR]["gpu"]
         if meta.get("enable_gpu") != wanted:
             meta["enable_gpu"] = wanted
+            changed = True
+
+        # ARC-HANDOFF-001: an empty model_sources is exactly the state that
+        # produced a heuristics-only submission. Keep it derived from the one
+        # constant at the top of this file rather than hand-edited JSON.
+        wanted_models = [KAGGLE_MODEL_SOURCE] if KAGGLE_MODEL_SOURCE else []
+        if meta.get("model_sources") != wanted_models:
+            meta["model_sources"] = wanted_models
+            changed = True
+
+        wanted_datasets = [KAGGLE_WHEEL_DATASET] if KAGGLE_WHEEL_DATASET else []
+        if meta.get("dataset_sources") != wanted_datasets:
+            meta["dataset_sources"] = wanted_datasets
+            changed = True
+
+        if changed:
             METADATA_PATH.write_text(json.dumps(meta, indent=2) + "\n")
-            print(f"[build_notebook] Synced enable_gpu={wanted} in "
+            print(f"[build_notebook] Synced accelerator/model/dataset sources in "
                   f"{METADATA_PATH.relative_to(ROOT)}")
+
+    if not KAGGLE_WHEEL_DATASET:
+        print(
+            "[build_notebook] WARNING: KAGGLE_WHEEL_DATASET is empty. The run "
+            "cell will hard-fail on Kaggle rather than play heuristics-only. "
+            "Attach a vLLM wheel dataset and set the constant before pushing."
+        )
 
 
 if __name__ == "__main__":

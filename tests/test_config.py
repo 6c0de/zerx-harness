@@ -204,3 +204,36 @@ def test_trace_export_path_read_from_env():
 def test_trace_export_path_absent_from_env_stays_none():
     config = Config.from_env({})
     assert config.trace_export_path is None
+
+
+def test_malformed_int_env_var_names_the_variable_and_the_value():
+    """ARC-HANDOFF-006: `int()` raised a bare "invalid literal" from inside
+    MyAgent.__init__, outside choose_action's catch-all, so a typo aborted
+    the whole game with an unattributable message.
+    """
+    with pytest.raises(ValueError, match="ZERX_BUDGET_SOFT_CAP='abc'"):
+        Config.from_env({"ZERX_BUDGET_SOFT_CAP": "abc"})
+
+
+def test_malformed_float_env_var_names_the_variable_and_the_value():
+    with pytest.raises(ValueError, match="ZERX_HEURISTIC_CONFIDENCE_THRESHOLD='high'"):
+        Config.from_env({"ZERX_HEURISTIC_CONFIDENCE_THRESHOLD": "high"})
+
+
+@pytest.mark.parametrize(
+    "kwargs, reason",
+    [
+        ({"platform": "kaggle"}, "platform=kaggle"),
+        ({"competition_mode": True}, "competition mode is active"),
+        ({"internet_enabled": False}, "internet is disabled"),
+    ],
+)
+def test_cerebras_lockout_covers_all_three_documented_conditions(kwargs, reason):
+    """AGENTS.md requires rejection under all three; only the first existed."""
+    with pytest.raises(ValueError, match=reason):
+        Config(backend="cerebras_dev", **kwargs)
+
+
+def test_cerebras_dev_is_still_allowed_in_ordinary_local_development():
+    cfg = Config(backend="cerebras_dev")
+    assert cfg.backend == "cerebras_dev"

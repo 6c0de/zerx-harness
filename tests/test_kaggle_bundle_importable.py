@@ -143,3 +143,79 @@ def test_bundle_contains_no_cerebras_endpoint_or_credential_reference():
             continue
         assert "api.cerebras.ai" not in source
         assert "CEREBRAS_API_KEY" not in source
+
+
+def _cells(notebook):
+    return [c["source"] for c in notebook["cells"] if c["cell_type"] == "code"]
+
+
+def test_kaggle_env_selects_a_real_model_backend_not_the_fake_one():
+    """ARC-HANDOFF-001's core symptom: with no ZERX_BACKEND set,
+    Config.backend stays "fake", select_backend returns FakeModelBackend(),
+    every generate() raises, and the agent plays heuristics-only with no
+    crash and no log line -- just a near-zero score.
+    """
+    from zerx.config import Config
+    from zerx.model_backend import FakeModelBackend, GemmaModelBackend, select_backend
+
+    assert isinstance(select_backend(Config()), FakeModelBackend)  # the old state
+
+    kaggle_env = {
+        "ZERX_BACKEND": "gemma_kaggle",
+        "ZERX_PLATFORM": "kaggle",
+        "ZERX_GEMMA_BASE_URL": "http://localhost:8000/v1/chat/completions",
+    }
+    backend = select_backend(Config.from_env(kaggle_env))
+    assert isinstance(backend, GemmaModelBackend)
+    assert backend.base_url == "http://localhost:8000/v1/chat/completions"
+
+
+def test_run_cell_exports_the_backend_env_vars():
+    import scripts.build_notebook as build_notebook
+
+    run_cell = next(s for s in _cells(build_notebook.build()) if "main.py --agent myagent" in s)
+    assert "ZERX_BACKEND=gemma_kaggle" in run_cell
+    assert "ZERX_PLATFORM=kaggle" in run_cell
+    assert "ZERX_GEMMA_BASE_URL=" in run_cell
+
+
+def test_notebook_serves_the_model_and_refuses_to_continue_without_it():
+    import scripts.build_notebook as build_notebook
+
+    combined = "\n".join(_cells(build_notebook.build()))
+    assert "vllm.entrypoints.openai.api_server" in combined
+    assert "--quantization" in combined and "fp8" in combined
+    # The readiness gate is the difference between a loud failure and an
+    # entire run silently spent on heuristics.
+    assert "did not become ready" in combined
+    assert "raise SystemExit" in combined
+
+
+def test_offline_invariant_no_pip_install_without_no_index():
+    """Internet is disabled at evaluation time; nothing may be downloaded."""
+    import re
+
+    import scripts.build_notebook as build_notebook
+
+    combined = "\n".join(_cells(build_notebook.build()))
+    for match in re.finditer(r"pip install(?P<args>[^\n]*)", combined):
+        assert "--no-index" in match.group("args"), match.group(0)
+
+
+def test_kernel_metadata_declares_a_model_source():
+    import json
+    from pathlib import Path
+
+    import scripts.build_notebook as build_notebook
+
+    meta = json.loads(
+        (Path(build_notebook.ROOT) / "notebooks" / "kernel-metadata.json").read_text()
+    )
+    assert meta["model_sources"], "empty model_sources means no weights are attached"
+    assert meta["enable_internet"] is False
+
+
+def test_accelerator_matches_the_documented_target_card():
+    import scripts.build_notebook as build_notebook
+
+    assert build_notebook.ACCELERATOR == "rtx6000"
