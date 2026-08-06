@@ -26,6 +26,18 @@ Python 3.11+ (this repo's own `.venv` targets 3.11/3.13; either works).
 truth for every flag and its default; don't rely on this README to stay
 in sync with it as flags are added.
 
+Two of those flags bound how long a run can take and are worth knowing
+before starting anything expensive:
+
+- `ZERX_MAX_ACTIONS` (default `400`) — per-game action cap. `MyAgent`
+  applies it to the instance in `__init__`, which is why every caller sets
+  this env var rather than assigning `MyAgentCls.MAX_ACTIONS`. Setting the
+  class attribute has no effect. `--max-steps` sets it for you.
+- `ZERX_MAX_WALL_SECONDS` (default `7200`, `0` disables) — per-game
+  wall-clock guard. `is_done()` ends a game early once it is exceeded, so
+  one slow model degrades one game instead of losing a whole Kaggle
+  notebook to a timeout kill.
+
 ## Attributing runs to your own account
 
 `arc_agi`'s client already reads the `ARC_API_KEY` environment variable

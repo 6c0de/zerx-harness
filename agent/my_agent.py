@@ -14,6 +14,7 @@ Contract (enforced by the vendored `agents.agent.Agent` ABC):
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -164,6 +165,14 @@ class MyAgent(Agent):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._config = Config.from_env()
+        # The vendored `agents.agent.Agent` base hardcodes MAX_ACTIONS = 80 as
+        # a generic anti-infinite-loop guard, and `Agent.main()` reads
+        # `self.MAX_ACTIONS` off the instance. Inheriting it capped every
+        # Kaggle game at 81 actions — a hard ceiling well below what reaching
+        # a level completion takes, and invisible in the logs as anything but
+        # a low score. Set it from config (ZERX_MAX_ACTIONS) so the cap is a
+        # recorded, ablatable decision instead of an upstream default.
+        self.MAX_ACTIONS = self._config.max_actions
         self._memory = MemoryState()
         self._dead_signatures = DeadSignatureTracker()
         self._backend = select_backend(self._config)
@@ -193,7 +202,29 @@ class MyAgent(Agent):
     def is_done(self, frames: List[FrameData], latest_frame: FrameData) -> bool:
         # Stop once we win. Don't stop on GAME_OVER — we want to RESET and
         # retry (matches the real starter's own default behavior).
-        return latest_frame.state is GameState.WIN
+        if latest_frame.state is GameState.WIN:
+            return True
+        # Wall-clock guard. `Agent.main()` sets self.timer before the first
+        # action and checks is_done() before every subsequent one, so this
+        # bounds a single game's runtime. Raising max_actions raises
+        # wall-clock exposure against Kaggle's ~9h notebook limit; without
+        # this, one slow or hung model turns the entire run into a kill with
+        # no scorecard at all, instead of costing one game its tail. Disabled
+        # when max_wall_seconds is 0.
+        limit = self._config.max_wall_seconds
+        if limit > 0 and getattr(self, "timer", 0):
+            elapsed = time.time() - self.timer
+            if elapsed >= limit:
+                logger.warning(
+                    "%s: wall-clock guard hit (%.0fs >= %ds) after %d actions; "
+                    "ending this game early to protect the overall run budget",
+                    self.game_id,
+                    elapsed,
+                    limit,
+                    self.action_counter,
+                )
+                return True
+        return False
 
     def _choose_action_inner(
         self, frames: List[FrameData], latest_frame: FrameData

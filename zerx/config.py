@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass
 from typing import Mapping, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _env_bool(env: Mapping[str, str], key: str, default: bool) -> bool:
@@ -44,7 +47,21 @@ class Config:
     memory_on: bool = True
     memory_refresh_interval: int = 10
     arbiter_on: bool = False
-    budget_soft_cap: int = 50
+    max_actions: int = 400  # per-game action cap. The vendored
+    # `agents.agent.Agent` base class hardcodes MAX_ACTIONS = 80 purely as a
+    # "don't loop forever" guard, and MyAgent inherited it, so every Kaggle
+    # game stopped at 81 actions — far below what completing a level takes.
+    # agent/my_agent.py sets self.MAX_ACTIONS from this field. 400 matches
+    # the upstream framework's own reasoning_agent.py choice.
+    max_wall_seconds: int = 7200  # per-game wall-clock guard (0 disables).
+    # Raising max_actions raises wall-clock exposure against Kaggle's ~9h
+    # notebook limit; this bounds a single game's runtime so a slow/hung
+    # model degrades one game instead of losing the whole run to a kill.
+    budget_soft_cap: int = 400  # keep in step with max_actions: this is the
+    # denominator behind BudgetSignal.should_favor_execution, which flips at
+    # 80% and (in policy.decide) then prefers a heuristic click over a model
+    # call. A soft cap far below the real action cap silently turns most of
+    # every game into heuristic-only play with the model never consulted.
     model_revision: str = "gemma-4-31b-it"
     backend: str = "fake"  # "fake" | "cerebras_dev" | "gemma_local" | "gemma_kaggle"
     platform: str = "local"  # "local" | "colab" | "kaggle"
@@ -67,6 +84,25 @@ class Config:
             raise ValueError("budget_soft_cap must be positive")
         if self.candidate_count < 1:
             raise ValueError("candidate_count must be >= 1")
+        if self.max_actions < 1:
+            raise ValueError("max_actions must be >= 1")
+        if self.max_wall_seconds < 0:
+            raise ValueError("max_wall_seconds must be >= 0")
+        if self.budget_soft_cap < self.max_actions:
+            # Not an error — a deliberately low soft cap is a valid ablation.
+            # But it is silent and expensive when unintended (the model stops
+            # being called at 80% of the soft cap, not of the real horizon),
+            # so it must never happen without appearing in the log.
+            logger.warning(
+                "budget_soft_cap=%d is below max_actions=%d: the budget signal "
+                "will favor heuristic execution from action %d onward, so the "
+                "model is not consulted for the remaining ~%d actions of a "
+                "full-length game.",
+                self.budget_soft_cap,
+                self.max_actions,
+                int(self.budget_soft_cap * 0.8),
+                max(0, self.max_actions - int(self.budget_soft_cap * 0.8)),
+            )
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Config":
@@ -84,6 +120,8 @@ class Config:
                 env, "ZERX_MEMORY_REFRESH_INTERVAL", cls.memory_refresh_interval
             ),
             arbiter_on=_env_bool(env, "ZERX_ARBITER_ON", cls.arbiter_on),
+            max_actions=_env_int(env, "ZERX_MAX_ACTIONS", cls.max_actions),
+            max_wall_seconds=_env_int(env, "ZERX_MAX_WALL_SECONDS", cls.max_wall_seconds),
             budget_soft_cap=_env_int(env, "ZERX_BUDGET_SOFT_CAP", cls.budget_soft_cap),
             model_revision=_env_str(env, "ZERX_MODEL_REVISION", cls.model_revision),
             backend=_env_str(env, "ZERX_BACKEND", cls.backend),

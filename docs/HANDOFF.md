@@ -279,8 +279,14 @@ parallel tracks below (none of them touch Kaggle).
    purely theoretical exposure — but the backoff gap itself remains
    unaddressed; this item stays open until backoff is actually
    implemented and tested.
-3. `parse_action(None, ...)` raises `AttributeError`, inert because
-   `decide()` wraps the only real call site in `try/except Exception`.
+3. ~~`parse_action(None, ...)` raises `AttributeError`, inert because
+   `decide()` wraps the only real call site in `try/except Exception`.~~
+   **SOLVED** on `newest-update` (2026-08-06) — `parse_action` and
+   `_extract_json_object` both reject a non-`str` input up front and return
+   `None`, matching the function's documented "never raises" contract. It
+   was only ever inert for `decide()`'s call site; `zerx/candidates.py`'s
+   `generate_candidates` and any future caller got the crash. Test:
+   `tests/test_policy_parse.py::test_parse_action_returns_none_for_non_string_input`.
 4. `history` is computed in `agent/my_agent.py` and passed to
    `decide()`/`perceive()`, but `perceive()` ignores it — deliberate
    interface stability for future movement-delta perception.
@@ -366,17 +372,31 @@ parallel tracks below (none of them touch Kaggle).
    and renders `legal_actions`/`budget`, verified directly post-merge. The
    re-run item above is still genuinely outstanding — it's now the
    leading candidate in "Exact next action" below.
-7. **`scripts/play_local.py`'s `MyAgentCls.MAX_ACTIONS = min(MyAgentCls.MAX_ACTIONS,
+7. ~~**`scripts/play_local.py`'s `MyAgentCls.MAX_ACTIONS = min(MyAgentCls.MAX_ACTIONS,
    args.max_steps)` can only ever *lower* the step cap**, never raise it
    above `MyAgentCls`'s existing default (80, inherited from the vendored
-   base `agents.agent.Agent` class) — confirmed by Track 4's dev-lane
+   base `agents.agent.Agent` class)~~ — confirmed by Track 4's dev-lane
    sweep (2026-08-06): `--max-steps 100` silently capped the run at 80
    steps/game, not 100. Recorded as the actual, accurate step count in
    `docs/superpowers/experiments/baseline-120.md` rather than the
-   originally intended one; not fixed (`scripts/play_local.py` unowned
-   this round).
-8. **`scripts/play_local.py:114` crashes with `UnicodeEncodeError` on
-   Windows non-UTF8 consoles** when printing multi-game summaries — the
+   originally intended one.
+   **SOLVED** on `newest-update` (2026-08-06), together with the much
+   larger problem underneath it (ARC-HANDOFF-007 below): the cap is now a
+   `Config` field, and every caller sets `ZERX_MAX_ACTIONS` instead of
+   poking the class attribute. Fixed in `scripts/play_local.py`,
+   `eval/run_ablation.py`'s `run_games`, `scripts/build_colab_notebook.py`'s
+   `smoke_game_cell`, and `scripts/visualize_play.py` (that one was already
+   an instance-level assignment and worked, but its `min()` was reduced to
+   a plain assignment for the same reason). Verified live:
+   `scripts/play_local.py --game ls20 --max-steps 120` now runs 121
+   actions, not 81.
+8. ~~**`scripts/play_local.py:114` crashes with `UnicodeEncodeError` on
+   Windows non-UTF8 consoles**~~ **SOLVED** on `newest-update`
+   (2026-08-06) — the per-game summary line now prints ASCII `->` instead
+   of `→`, so the multi-game loop no longer aborts after the first game on
+   a `cp1254` console. Original description follows.
+
+   Crashes when printing multi-game summaries — the
    final per-game summary line hardcodes a `→` character that the
    Windows `cp1254` console codepage cannot encode, so the script's loop
    over games terminates via an uncaught exception right after the first
@@ -408,8 +428,24 @@ parallel tracks below (none of them touch Kaggle).
    tokens and latency per call, and a slightly larger JSON schema to
    parse/validate. Not started; no fix candidate written yet beyond this
    note.
-10. **`budget_soft_cap`'s default (50) silently turns the back half of a
-    100-step game into heuristic-only play, with no model call at all.**
+10. ~~**`budget_soft_cap`'s default (50) silently turns the back half of a
+    100-step game into heuristic-only play, with no model call at all.**~~
+    **SOLVED** on `newest-update` (2026-08-06) — the default is no longer
+    an unrelated constant: `Config.budget_soft_cap` now defaults to `400`,
+    matching the new `Config.max_actions` default, so
+    `should_favor_execution` flips at action 320 of 400 (the last 20% of
+    the real horizon, which is the semantic the signal was designed for)
+    instead of action 40. A deliberately lower soft cap is still a legal
+    ablation, but `Config.__post_init__` now emits a `logger.warning`
+    naming both values and the number of actions the model will not be
+    consulted for, so it can never be silent again. The Colab notebook's
+    per-run `ZERX_BUDGET_SOFT_CAP=1000` diagnostic override is kept (it is
+    now redundant rather than load-bearing) and its comment corrected.
+    Note this changes `Config.config_hash()`, so records from before this
+    commit are not hash-comparable with records after it. Tests:
+    `tests/test_config.py::test_default_budget_soft_cap_does_not_silence_the_model_early`
+    and `::test_low_budget_soft_cap_is_allowed_but_warns`. Original
+    description follows.
     Found 2026-08-06 while root-causing this session's real Colab run of
     `integration/baseline-120-colab-ready` @ `4a1fda1` (8 games, 8-bit
     fp8, legal-actions fix included): `aggregate_score: 0.0`, all 8 games
@@ -1403,3 +1439,180 @@ check; `zerx/secret_scan.py` still has exactly 2 `re.compile` patterns).
       conditions, with a test per condition
 - [ ] Secret scan catches a planted bare key value, not just the name
 - [ ] Existing scan tests still pass
+
+---
+
+## Branch `newest-update` — 2026-08-06
+
+Scope was explicitly **everything except** the already-triaged Kaggle
+blockers: ARC-HANDOFF-001 (no model attached to the submission notebook),
+`ACCELERATOR = "t4"`, the `kernel-metadata.json` username placeholder, the
+missing local `.venv`/`.kaggle` credentials, the not-yet-attempted Day-1
+smoke submission, ARC-HANDOFF-002 (concurrent `GameAction` singletons) and
+ARC-HANDOFF-003 (four no-op ablation flags) are all owned elsewhere and were
+deliberately **not** touched on this branch. ARC-HANDOFF-005 and -006 (the
+P3 tooling/config-hardening items) were likewise left alone for the same
+reason.
+
+Environment note: this checkout had no `.venv` and no `vendor/`, so both
+were created first (`python3.12 -m venv`, `pip install arc-agi pytest numpy
+pygame python-dotenv`, `git clone` + `scripts/slim_framework.py`). Test
+counts below are from that environment.
+
+- Suite before any change: **353 passed, 25 deselected**
+  (`-m "not slow_local_engine"`); **378** unfiltered.
+- Suite after: **367 passed, 25 deselected**; **392 passed, 0 failed**
+  unfiltered (+14 net-new tests).
+
+Three previously-unrecorded defects were found, plus four already-recorded
+ones closed out (items 3, 7, 8 and 10 in "Known failures or risks" above,
+each marked SOLVED in place).
+
+---
+
+### [P0] ARC-HANDOFF-007 — Every Kaggle game was hard-capped at 81 actions
+
+**Status:** **SOLVED** on `newest-update` · **Category:** Scoring
+
+#### Problem
+`MyAgent` never overrode `MAX_ACTIONS`, so it inherited
+`agents.agent.Agent.MAX_ACTIONS = 80` — a generic "don't loop forever"
+guard the upstream framework sets for its own examples. `Agent.main()`'s
+loop condition is `self.action_counter <= self.MAX_ACTIONS`, so every game
+stopped after 81 actions. Several upstream templates override it
+(`reasoning_agent.py` uses 400, `multimodal.py` 40); ours did not.
+
+#### Why it mattered
+On Kaggle this is a hard ceiling on the score, and an invisible one: no
+exception, no warning, just `Exiting: agent reached MAX_ACTIONS of 80` in a
+log nobody reads, and a low number on the leaderboard. Reaching a level
+completion in ARC-AGI-3 generally takes more than 80 actions, so the agent
+was being stopped before its own thesis could be tested. This is
+independent of, and additive to, ARC-HANDOFF-001 — fixing the missing model
+alone would not have lifted this ceiling.
+
+#### Fix
+New `Config.max_actions` field (default `400`, env `ZERX_MAX_ACTIONS`).
+`MyAgent.__init__` sets `self.MAX_ACTIONS = self._config.max_actions`, so
+the cap is a recorded, ablatable, serialized decision rather than an
+upstream default. 400 is not a tuned value — it matches the upstream
+framework's own `reasoning_agent.py` choice and is deliberately
+configurable.
+
+Because the cap is now applied to the *instance* at construction, anything
+that sets the *class* attribute beforehand is silently overwritten. Every
+such call site was migrated to `ZERX_MAX_ACTIONS`:
+`scripts/play_local.py`, `eval/run_ablation.py`'s `run_games`, and
+`scripts/build_colab_notebook.py`'s `smoke_game_cell`.
+`scripts/visualize_play.py` already assigned to the instance after
+construction and still works; its `min()` was reduced to a plain assignment
+for the same reason as item 7 above.
+
+#### Verification
+`scripts/play_local.py --game ls20 --max-steps 120` → `actions=121`
+(previously 81 for any requested value above 80).
+`tests/test_my_agent.py::test_agent_action_cap_comes_from_config_not_the_upstream_default`
+asserts both the inherited value we must not use (80) and the configured
+one.
+
+#### Risk / follow-up owned by whoever runs the submission
+Raising the cap raises wall-clock exposure against Kaggle's ~9 h notebook
+limit — roughly 5× the model calls per game versus the old 81. That risk is
+what ARC-HANDOFF-008 below addresses, but the arithmetic still needs a real
+measurement: **nobody has yet timed one Gemma-backed action on the target
+card.** Do that before the final submission and set `ZERX_MAX_ACTIONS`
+accordingly rather than trusting the 400 default blind.
+
+---
+
+### [P1] ARC-HANDOFF-008 — No wall-clock guard on a game
+
+**Status:** **SOLVED** on `newest-update` · **Category:** Run safety
+
+#### Problem
+Nothing bounded how long a single game could run. With the 81-action
+ceiling this was academic; with ARC-HANDOFF-007's fix it is not. A slow or
+hung model turns the whole notebook into a 9-hour timeout kill with no
+scorecard at all, rather than costing one game its tail.
+
+#### Fix
+New `Config.max_wall_seconds` (default `7200`, `0` disables, env
+`ZERX_MAX_WALL_SECONDS`). `MyAgent.is_done()` returns `True` — with a
+`logger.warning` naming the game, elapsed time and action count — once
+`time.time() - self.timer` crosses it. `Agent.main()` sets `self.timer`
+before the first action and calls `is_done()` before every subsequent one,
+so this bounds one game without touching the framework.
+
+Guard on `getattr(self, "timer", 0)`: before `main()` runs, `timer` is the
+class-level `0`, which would otherwise read as "infinitely overdue" and
+refuse to play at all. Covered by
+`tests/test_my_agent.py::test_wall_clock_guard_inert_before_main_sets_the_timer`,
+plus tests for the over-budget, under-budget and disabled cases.
+
+#### Note on concurrency
+On Kaggle all games run concurrently in threads, so per-game elapsed time
+is approximately overall elapsed time — a 2 h per-game guard bounds the
+whole run near 2 h, comfortably inside the ~9 h limit. This interacts with
+ARC-HANDOFF-002 (owned elsewhere): if that is resolved by running games
+sequentially instead, the per-game guard must be re-derived from the
+9 h budget divided by the game count, not left at 7200.
+
+---
+
+### [P1] ARC-HANDOFF-009 — The deterministic fallback emitted one identical action forever
+
+**Status:** **SOLVED** on `newest-update` · **Category:** Scoring
+
+#### Problem
+`zerx/policy._deterministic_fallback` returned the first legal entry of
+`_FALLBACK_PREFERENCE` and nothing else. For any game where the model is
+unreachable and there are no click candidates — `ls20`, for instance, never
+has `ACTION6` legal — that is the same action on every single step for the
+entire game.
+
+#### Evidence
+A real local run (`scripts/play_local.py --game ls20 --max-steps 120`,
+`backend=fake`) produced **121 consecutive `ACTION1`s**. This is strictly
+worse than the upstream random baseline: it gathers no evidence, cannot
+leave the start state, and starves `TransitionLedger` /
+`DeadSignatureTracker` / `ExactStateMemory` of any signal to learn from.
+
+#### Fix
+The preference list is filtered to the legal set and indexed by
+`actions_taken % len(ordered)`. The function stays pure and deterministic —
+same inputs, same output, no new state — while actually exploring the legal
+set. `decide()` passes the `actions_taken` it already receives.
+
+#### Verification
+Same live `ls20` run after the fix (60 steps): `ACTION1` 16, `ACTION2` 15,
+`ACTION3` 15, `ACTION4` 15. Tests:
+`tests/test_policy_decide.py::test_deterministic_fallback_rotates_instead_of_repeating_one_action`
+(asserts diversification *and* that it is deterministic, not random), plus
+single-legal-action and RESET-only edge cases.
+
+#### Consequence for `exact_state_suppression_on`
+Three tests in `tests/test_my_agent_exact_state.py` were asserting the old
+repeat-forever behavior as the baseline the suppression feature escapes
+from. Rotation now subsumes suppression on the deterministic-fallback path,
+so those tests were rewritten to drive the feature through the path where
+it still genuinely applies — the heuristic path, where an unchanging frame
+makes the policy re-propose the identical `ACTION6:x,y` every step. The
+swap and the cascade-past-a-second-suppressed-alternative case are both
+still covered, and one test now asserts the rotation itself with
+suppression off.
+
+---
+
+### Checked and deliberately not changed
+
+- **`vc33`'s all-`ACTION6` fallback loop is not a stuck loop.** A traced
+  40-step run (`ZERX_TRACE_EXPORT_PATH`) shows the coordinates do move —
+  `(29,0)`, `(27,0)`, `(25,0)`, `(24,0)`, … — so the candidate ranking is
+  responding to the frame. They are all on row `y=0` though, which is the
+  HUD-versus-gameplay blind spot already recorded as `exp-150-duck-tools`
+  Variant A scope. Left there; not reopened here.
+- **ARC-HANDOFF-005 / -006** (root `pytest` collection, unregistered marks,
+  `Config.from_env` crashing on a malformed value, the 1-of-3 Cerebras
+  lockout, the literal-only secret scanner) — all still open, all
+  deliberately out of this branch's scope per the owner's split.
+

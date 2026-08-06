@@ -32,6 +32,13 @@ def _extract_json_object(raw: str) -> Optional[str]:
     """Deterministic repair: strip markdown code fences and pull out the
     first {...} substring. No model call, no retried reasoning.
     """
+    if not isinstance(raw, str):
+        # A backend that returns None (or any non-str) on an empty/odd
+        # response used to raise AttributeError out of parse_action. It was
+        # inert only because decide()'s single call site happens to be inside
+        # a try/except; any other caller (zerx/candidates.py, tests, future
+        # tooling) got a crash instead of the documented "returns None".
+        return None
     stripped = raw.strip()
     stripped = re.sub(r"^```(?:json)?", "", stripped)
     stripped = re.sub(r"```$", "", stripped).strip()
@@ -45,6 +52,8 @@ def parse_action(raw: str, legal_actions: FrozenSet[ActionName]) -> Optional[Par
     if both attempts fail or the result doesn't validate — callers fall
     back per the documented fallback chain.
     """
+    if not isinstance(raw, str):
+        return None
     for attempt, candidate_text in enumerate((raw, _extract_json_object(raw))):
         if candidate_text is None:
             continue
@@ -104,13 +113,28 @@ _FALLBACK_PREFERENCE = (
 
 
 def _deterministic_fallback(
-    legal_actions: FrozenSet[ActionName], grid_size: int = 64
+    legal_actions: FrozenSet[ActionName],
+    grid_size: int = 64,
+    actions_taken: int = 0,
 ) -> Optional[Action]:
-    for name in _FALLBACK_PREFERENCE:
-        if name in legal_actions:
-            if name == ActionName.ACTION6:
-                return Action(name=name, x=grid_size // 2, y=grid_size // 2)
-            return Action(name=name)
+    """Pick a legal action by preference order, rotated by `actions_taken`.
+
+    Rotation matters: without it this always returned the single
+    highest-preference legal action, so a game with no model and no click
+    candidates (e.g. ls20, which never has ACTION6 legal) emitted the exact
+    same action on every step for the whole run — 121 consecutive ACTION1s
+    in a real local run. That is strictly worse than the upstream random
+    baseline: it gathers no information at all and cannot leave the start
+    state. Keying the rotation on `actions_taken` keeps the function pure
+    and deterministic (same inputs, same output) while making the sequence
+    actually explore the legal set.
+    """
+    ordered = [name for name in _FALLBACK_PREFERENCE if name in legal_actions]
+    if ordered:
+        name = ordered[actions_taken % len(ordered)]
+        if name == ActionName.ACTION6:
+            return Action(name=name, x=grid_size // 2, y=grid_size // 2)
+        return Action(name=name)
     if ActionName.RESET in legal_actions:
         return Action(name=ActionName.RESET)
     return None
@@ -308,7 +332,7 @@ def decide(
             new_memory,
         )
 
-    deterministic = _deterministic_fallback(legal_actions)
+    deterministic = _deterministic_fallback(legal_actions, actions_taken=actions_taken)
     if deterministic is not None:
         return (
             Decision(

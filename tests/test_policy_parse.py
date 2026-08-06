@@ -50,3 +50,15 @@ def test_parse_action_rejects_unknown_action_name():
 
 def test_parse_action_action6_requires_data():
     assert parse_action('{"action": "ACTION6"}', LEGAL) is None
+
+
+def test_parse_action_returns_none_for_non_string_input():
+    """A backend returning None (or any non-str) used to raise
+    AttributeError out of parse_action instead of the documented None. It
+    was inert only because decide()'s single call site sits inside a
+    try/except; zerx/candidates.py and any other caller got a crash.
+    """
+    legal = frozenset({ActionName.ACTION1})
+    assert parse_action(None, legal) is None
+    assert parse_action(123, legal) is None
+    assert parse_action({"action": "ACTION1"}, legal) is None  # dict, not JSON text

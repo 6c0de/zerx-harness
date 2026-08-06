@@ -318,14 +318,15 @@ def build() -> dict:
             os.environ["ZERX_TRACE_EXPORT_PATH"] = "/content/traces/"
             # Diagnostic-run-only override (not a default change): zerx/
             # budget.py's should_favor_execution flips once actions_taken
-            # crosses 80% of budget_soft_cap (default 50) and, when true,
-            # zerx/policy.py's decide() skips the model call entirely in
-            # favor of the top heuristic click candidate. At the default
-            # cap that fires at action 40, silently turning the back half
-            # of every MAX_STEPS_PER_GAME=100 game into heuristic-only
-            # play. Raised well above MAX_STEPS_PER_GAME here so this run
-            # actually measures the model's behavior for the whole game,
-            # not a mix diluted by an unrelated budget policy.
+            # crosses 80% of budget_soft_cap and, when true, zerx/policy.py's
+            # decide() skips the model call entirely in favor of the top
+            # heuristic click candidate. Config.budget_soft_cap now defaults
+            # to 400 (tied to Config.max_actions) rather than the old 50,
+            # which used to fire at action 40 and silently turn the back
+            # half of every MAX_STEPS_PER_GAME=100 game into heuristic-only
+            # play. Pinned well above MAX_STEPS_PER_GAME here anyway so this
+            # run measures the model's behavior for the whole game
+            # regardless of what the default happens to be.
             os.environ["ZERX_BUDGET_SOFT_CAP"] = "1000"
 
             sys.path.insert(0, "")
@@ -352,16 +353,17 @@ def build() -> dict:
             # Config.backend -- gemma_local already resolves correctly
             # either way (see docs/superpowers/plans/parallel-baseline-120/
             # README.md's "concrete, empirical finding").
-            # A plain min() against the vendored base Agent class's own
-            # MAX_ACTIONS (80) can only ever LOWER the cap, never raise it
-            # to the MAX_STEPS_PER_GAME actually requested here (known bug,
-            # docs/HANDOFF.md "Known failures or risks" item 7 -- confirmed
-            # by a real Colab run capping at 81, not the requested 100).
-            # This cell always wants exactly MAX_STEPS_PER_GAME, so set it
-            # directly instead of deferring to whatever the base class
-            # happens to default to.
+            # The per-game action cap is now a Config field
+            # (ZERX_MAX_ACTIONS), which MyAgent.__init__ applies to the
+            # instance -- so it overrides anything set on the class here.
+            # Set the env var instead. This also supersedes the old
+            # min()-against-the-base-class form, which could only ever
+            # LOWER the cap below the inherited 80 and never raise it to
+            # the MAX_STEPS_PER_GAME actually requested (docs/HANDOFF.md
+            # "Known failures or risks" item 7 -- confirmed by a real Colab
+            # run capping at 81, not the requested 100).
+            os.environ["ZERX_MAX_ACTIONS"] = str(MAX_STEPS_PER_GAME)
             MyAgentCls = _load_my_agent_class()
-            MyAgentCls.MAX_ACTIONS = MAX_STEPS_PER_GAME
 
             arc = arc_agi.Arcade(operation_mode=OperationMode.NORMAL)
 

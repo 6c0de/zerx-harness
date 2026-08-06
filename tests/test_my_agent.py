@@ -296,3 +296,68 @@ def test_choose_action_logs_a_warning_when_the_model_backend_raises(caplog):
         agent.choose_action([frame], frame)
 
     assert any("RuntimeError: boom" in record.getMessage() for record in caplog.records)
+
+
+def test_agent_action_cap_comes_from_config_not_the_upstream_default(monkeypatch):
+    """Regression: `agents.agent.Agent` hardcodes MAX_ACTIONS = 80 as a
+    generic anti-infinite-loop guard, and `Agent.main()` reads it off the
+    instance. MyAgent inherited it, so every Kaggle game stopped at 81
+    actions with no log line saying so — just a low score.
+    """
+    from agents.agent import Agent as UpstreamAgent
+
+    assert UpstreamAgent.MAX_ACTIONS == 80  # the inherited value we must not use
+
+    agent = _make_agent()
+    assert agent.MAX_ACTIONS == 400  # Config.max_actions default
+
+    monkeypatch.setenv("ZERX_MAX_ACTIONS", "1234")
+    assert _make_agent().MAX_ACTIONS == 1234
+
+
+def test_is_done_still_true_on_win_and_false_mid_game():
+    agent = _make_agent()
+    won = FrameData(frame=[[[0]]], state=GameState.WIN, available_actions=[1])
+    playing = FrameData(frame=[[[0]]], state=GameState.NOT_FINISHED, available_actions=[1])
+    assert agent.is_done([won], won) is True
+    assert agent.is_done([playing], playing) is False
+
+
+def test_wall_clock_guard_ends_a_game_that_outlives_its_budget(monkeypatch):
+    """Raising the action cap raises wall-clock exposure against Kaggle's
+    ~9h limit. The guard must end one game early rather than let the whole
+    notebook be killed with no scorecard.
+    """
+    import time as _time
+
+    monkeypatch.setenv("ZERX_MAX_WALL_SECONDS", "30")
+    agent = _make_agent()
+    playing = FrameData(frame=[[[0]]], state=GameState.NOT_FINISHED, available_actions=[1])
+
+    agent.timer = _time.time()  # just started
+    assert agent.is_done([playing], playing) is False
+
+    agent.timer = _time.time() - 31  # over budget
+    assert agent.is_done([playing], playing) is True
+
+
+def test_wall_clock_guard_disabled_by_zero(monkeypatch):
+    import time as _time
+
+    monkeypatch.setenv("ZERX_MAX_WALL_SECONDS", "0")
+    agent = _make_agent()
+    playing = FrameData(frame=[[[0]]], state=GameState.NOT_FINISHED, available_actions=[1])
+    agent.timer = _time.time() - 100_000
+    assert agent.is_done([playing], playing) is False
+
+
+def test_wall_clock_guard_inert_before_main_sets_the_timer(monkeypatch):
+    """`Agent.main()` assigns self.timer; before that it is the class-level
+    0. The guard must not read that as "infinitely overdue" and refuse to
+    play at all.
+    """
+    monkeypatch.setenv("ZERX_MAX_WALL_SECONDS", "30")
+    agent = _make_agent()
+    playing = FrameData(frame=[[[0]]], state=GameState.NOT_FINISHED, available_actions=[1])
+    assert agent.timer == 0
+    assert agent.is_done([playing], playing) is False

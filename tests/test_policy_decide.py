@@ -4,7 +4,7 @@ from zerx.heuristics import ClickCandidate, DeadSignatureTracker
 from zerx.memory import MemoryState
 from zerx.model_backend import FakeModelBackend
 from zerx.perception import LabeledObject, PerceptionResult
-from zerx.policy import build_prompt, decide
+from zerx.policy import _deterministic_fallback, build_prompt, decide
 from zerx.types import Action, ActionName, GameFrame
 
 LEGAL = frozenset(
@@ -511,3 +511,44 @@ def test_decide_model_error_is_none_when_no_model_call_happens():
         actions_taken=0,
     )
     assert decision.model_error is None
+
+
+def test_deterministic_fallback_rotates_instead_of_repeating_one_action():
+    """Regression: the deterministic fallback always returned the single
+    highest-preference legal action, so a game with no reachable model and
+    no click candidates (ls20 never has ACTION6 legal) emitted the identical
+    action every step -- 121 consecutive ACTION1s in a real local run, which
+    cannot leave the start state and gathers no evidence at all.
+    """
+    legal = frozenset({ActionName.ACTION1, ActionName.ACTION2, ActionName.ACTION5})
+    backend = FakeModelBackend(responses=[])  # every generate() raises
+
+    seen = []
+    for step in range(9):
+        decision, _ = decide(
+            frame=_blank_frame(legal=legal),  # no objects -> no candidates
+            history=(),
+            memory=MemoryState(),
+            dead_signatures=DeadSignatureTracker(),
+            config=Config(),
+            backend=backend,
+            actions_taken=step,
+        )
+        assert decision.source == "fallback_deterministic"
+        assert decision.action.name in legal
+        seen.append(decision.action.name)
+
+    assert len(set(seen)) == 3, f"fallback never diversified: {seen}"
+    # Deterministic, not random: the same actions_taken gives the same action.
+    assert seen[0] == seen[3] == seen[6]
+
+
+def test_deterministic_fallback_is_stable_for_a_single_legal_action():
+    legal = frozenset({ActionName.ACTION1})
+    for step in (0, 1, 7, 100):
+        assert _deterministic_fallback(legal, actions_taken=step).name == ActionName.ACTION1
+
+
+def test_deterministic_fallback_resets_when_only_reset_is_legal():
+    action = _deterministic_fallback(frozenset({ActionName.RESET}), actions_taken=5)
+    assert action is not None and action.name == ActionName.RESET
