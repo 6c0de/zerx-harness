@@ -518,9 +518,10 @@ file's "Exact next action" section after the `baseline-120` integration:
    thread, so it genuinely halts execution) and ←/→ history navigation
    through a capped in-memory buffer. `--replay <trace.jsonl>` loads a
    saved trace file with no game engine involved, sharing the same
-   render/navigate path, always paused. A follow-up fix round (see
-   `docs/superpowers/sdd/2026-08-06-baseline-120-followups/task-5-report.md`'s
-   appended "Fix report") resolved 2 Important review findings: the
+   render/navigate path, always paused. A follow-up fix round (recorded
+   in the local, gitignored `.superpowers/sdd/` session ledger for this
+   plan — not source of truth, see "Uncommitted or external artifacts"
+   below) resolved 2 Important review findings: the
    reasoning panel was ~55% clipped off-screen at the project's real
    64x64 grid (fixed via a wider window plus a new `_wrap_reasoning` pure
    helper that computes wrap width from real font metrics instead of a
