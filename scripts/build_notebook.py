@@ -211,27 +211,66 @@ TRANSFORMERS_INSTALL_SOURCE = dedent(
 
     # Locate the attached wheels wherever Kaggle mounted them, rather than
     # hardcoding a path: dataset mount points have bitten this project before.
-    candidates = glob.glob("/kaggle/input/*transformers-wheels*")
-    if not candidates:
+    # Find the wheel itself, anywhere under /kaggle/input, rather than
+    # guessing the mount path.
+    #
+    # Kaggle's layout is not stable across kernels: one kernel mounted this
+    # dataset flat at /kaggle/input/zerx-transformers-wheels, another nested it
+    # under /kaggle/input/datasets/. A glob written for either shape fails on
+    # the other, and each failure costs a run. What does not vary is the
+    # filename we actually need.
+    TARGET = "transformers-5.5.0-py3-none-any.whl"
+
+    def _find_wheel_dir():
+        for root, _dirs, files in os.walk("/kaggle/input"):
+            if TARGET in files:
+                return root
+        return None
+
+    wheel_dir = _find_wheel_dir()
+
+    if wheel_dir is None:
+        # Kaggle sometimes keeps a zip-uploaded directory as a .zip rather than
+        # expanding it, and --find-links needs real .whl files. Expand any
+        # archive that plausibly holds them, then look again.
+        archives = glob.glob("/kaggle/input/**/*.zip", recursive=True)
+        if archives:
+            os.makedirs("/tmp/wheels", exist_ok=True)
+            for archive in archives:
+                try:
+                    with zipfile.ZipFile(archive) as handle:
+                        handle.extractall("/tmp/wheels")
+                except zipfile.BadZipFile:
+                    continue
+            if os.path.exists(os.path.join("/tmp/wheels", TARGET)):
+                wheel_dir = "/tmp/wheels"
+            else:
+                for root, _dirs, files in os.walk("/tmp/wheels"):
+                    if TARGET in files:
+                        wheel_dir = root
+                        break
+
+    if wheel_dir is None:
+        # Report what IS mounted. "Not attached" and "attached somewhere I did
+        # not look" need completely different fixes, and a bare failure cannot
+        # tell them apart.
+        tree = []
+        for root, dirs, _files in os.walk("/kaggle/input"):
+            if root.count(os.sep) <= 4:
+                tree.append(root)
+            else:
+                dirs[:] = []
         raise SystemExit(
-            "The transformers wheels dataset is not attached. Add "
-            "'WHEELS_DATASET_LITERAL' to kernel-metadata.json's dataset_sources."
+            f"{TARGET} was not found anywhere under /kaggle/input. Directories "
+            f"seen: {sorted(tree)[:60]}. Expected it from the dataset "
+            "'WHEELS_DATASET_LITERAL'. If kernel-metadata.json already lists "
+            "that under dataset_sources, note that a newly created kernel's "
+            "first run can start before its data sources finish attaching -- "
+            "pushing again is usually enough."
         )
-    wheel_dir = candidates[0]
 
-    # Kaggle keeps a zip-uploaded directory as a .zip rather than expanding it,
-    # and --find-links needs real .whl files. Handle both presentations.
-    if not glob.glob(os.path.join(wheel_dir, "**", "*.whl"), recursive=True):
-        os.makedirs("/tmp/wheels", exist_ok=True)
-        for archive in glob.glob(os.path.join(wheel_dir, "**", "*.zip"), recursive=True):
-            with zipfile.ZipFile(archive) as handle:
-                handle.extractall("/tmp/wheels")
-        wheel_dir = "/tmp/wheels"
-
-    found = glob.glob(os.path.join(wheel_dir, "**", "*.whl"), recursive=True)
+    found = glob.glob(os.path.join(wheel_dir, "*.whl"))
     print(f"{len(found)} wheels under {wheel_dir}")
-    if not found:
-        raise SystemExit(f"No .whl files found under {wheel_dir}")
 
     # The version pin is load-bearing. An unpinned `transformers` is
     # "already satisfied" by the image's 5.0.0, so pip does nothing at all and
