@@ -173,6 +173,64 @@ hardcoded URL.
   candidate first task for whichever of the 4 tracks below finishes
   first**, since it's small and independent of all 4 tracks' actual scope.
 
+## Colab/Kaggle quantization decision (2026-08-06, branch `feat/baseline-120-8bit-quant-parity`)
+
+The "Colab state" above (bf16, A100-80GB) predates this decision and its
+`--quantization`/`--load-format` flags are now stale for future runs. Human
+owner decision, 2026-08-06: Colab must load the model at the same precision
+Kaggle will actually use, not whatever precision the attached Colab card
+happens to have headroom for — otherwise a Colab validation result doesn't
+reflect what Kaggle will actually deploy (`AGENTS.md`/`docs/TEAM_WORKFLOW.md`:
+Kaggle is the deployment source of truth, Colab results are provisional).
+
+- Kaggle's RTX Pro 6000 has 48GB VRAM — bf16 (~61.4GB weights) does not fit;
+  it needs quantization regardless of what Colab needs.
+- `scripts/build_colab_notebook.py` switched from its previous default
+  (4-bit bitsandbytes, sized for a since-superseded 40GB assumption) to
+  **8-bit dynamic FP8** (`--quantization fp8`), not bf16, so Colab and
+  Kaggle run comparable precision.
+- Verified against vLLM's own docs (fetched 2026-08-06, Context7 MCP was
+  unavailable this session so this went through direct doc fetches
+  instead): vLLM's bitsandbytes in-flight quantization only supports 4-bit
+  (nf4) from an unquantized checkpoint — there is no in-flight 8-bit
+  bitsandbytes mode (`docs.vllm.ai/en/stable/features/quantization/bnb/`).
+  The real 8-bit path is vLLM's dynamic FP8 quantization: weights to
+  FP8_E4M3 (~1 byte/param, ~31GB total for this model), no calibration
+  data, no bitsandbytes package needed
+  (`docs.vllm.ai/en/latest/features/quantization/llm_compressor/fp8/`).
+- A100 (Ampere, compute capability 8.0) runs FP8 as weight-only W8A16 via
+  the FP8 Marlin kernel (below the >=8.9 threshold for full W8A8 activation
+  quantization) — correct weights and memory footprint, but the docs note
+  limited latency gains on this card. Kaggle's RTX Pro 6000 is a newer
+  architecture and may see real W8A8 speedup instead; that throughput
+  difference across the two cards is expected and does not affect the
+  precision parity this change is actually for.
+- The saved result JSON now records `"quantization"` explicitly (previously
+  only `"dtype"` was recorded, so a saved result couldn't distinguish a
+  4-bit run from a bf16 run after the fact).
+- **Not done yet:** Kaggle's own vLLM launch config doesn't exist anywhere
+  in this repo (Kaggle deployment work hasn't started — see "Kaggle state"
+  below). When it's built, it must pass the same `--quantization fp8` flag
+  — the parity this change establishes only holds once both sides actually
+  use it.
+- `notebooks/colab_gemma_smoke.ipynb` must be regenerated
+  (`python scripts/build_colab_notebook.py`) after this fix is committed,
+  per known-issue 6 above, so its embedded `COMMIT_SHA` points at a commit
+  that actually contains this change.
+- Tests: `tests/test_build_colab_notebook.py` updated (one test replaced,
+  two added), 25/25 passing. Full fast suite (`pytest tests/ -q -m "not
+  slow_local_engine"`): 270 passed; 2 failed + 3 collection errors, all
+  five pre-existing `ModuleNotFoundError` for `arc_agi`/`arcengine` (this
+  checkout has no `.venv` — `make setup` was never run this session) —
+  unrelated to this change, not investigated further here.
+
+This branch has no file overlap with the two other open
+`baseline-120`-followup branches (`feat/baseline-120-followups`:
+README/visualizer/trace-export; `feat/policy-prompt-legal-budget`:
+`build_prompt()` legal-actions fix) — all three are independent and should
+be merged and tested together before the next authoritative Colab run, per
+the human owner's instruction.
+
 ## Cerebras development state
 
 No `CEREBRAS_API_KEY` exists in **this Claude Code session's own tool
