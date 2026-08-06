@@ -41,16 +41,27 @@ ACCELERATOR = "rtx6000"
 # be honoured by the API.
 _ACCELERATORS = {
     "cpu":     {"name": "none",            "gpu": False, "push": None},
-    "t4":      {"name": "nvidiaTeslaT4",   "gpu": True,  "push": "NvidiaTeslaT4"},    # verified 2026-08-06
-    "p100":    {"name": "nvidiaTeslaP100", "gpu": True,  "push": "NvidiaTeslaP100"},  # verified 2026-08-06 (Kaggle's default GPU)
-    "rtx6000": {"name": "nvidiaRtx6000",   "gpu": True,  "push": "nvidiaRtx6000"},    # NOT honoured — falls back to P100
+    "t4":      {"name": "nvidiaTeslaT4",   "gpu": True,  "push": "NvidiaTeslaT4"},
+    "p100":    {"name": "nvidiaTeslaP100", "gpu": True,  "push": "NvidiaTeslaP100"},
+    "rtx6000": {"name": "nvidiaRtx6000",   "gpu": True,  "push": "NvidiaRtxPro6000"},
 }
 
-# Accelerator values the Kaggle SDK actually documents
-# (kagglesdk/kernels/types/kernels_api_service.py's `machine_shape`).
-# `nvidiaRtx6000` is absent from that list and was observed to be silently
-# ignored rather than rejected.
-_SDK_DOCUMENTED_ACCELERATORS = {"NvidiaTeslaT4", "NvidiaTeslaP100", "Tpu1VmV38"}
+# `machine_shape` values observed to actually be honoured by the push API.
+#
+# The starter's own accelerator name for the RTX card ("nvidiaRtx6000") is
+# NOT one of them: pushing with it yielded a Tesla P100, silently. The real
+# string is "NvidiaRtxPro6000", recovered by selecting the accelerator in
+# the Kaggle web UI and reading back the server's own metadata with
+# `kaggle kernels pull -m` — it appears in neither the starter nor the
+# Kaggle SDK's documented list (which knows only NvidiaTeslaT4,
+# NvidiaTeslaP100, Tpu1VmV38). See
+# docs/superpowers/experiments/kaggle-env-probe.md.
+#
+# Kept as a warn-list rather than a hard validation: Kaggle can add shapes
+# faster than this file learns about them, and refusing to push an unknown
+# value would be worse than pushing it with a warning. Silence is the thing
+# to avoid — an unrecognised value costs you the default GPU without saying so.
+_VERIFIED_ACCELERATORS = {"NvidiaTeslaT4", "NvidiaTeslaP100", "NvidiaRtxPro6000"}
 
 
 def push_accelerator_flag() -> str:
@@ -442,11 +453,11 @@ def main() -> None:
     if flag:
         print(f"[build_notebook] Push with:  kaggle kernels push -p notebooks/ "
               f"--accelerator {flag}")
-        if flag not in _SDK_DOCUMENTED_ACCELERATORS:
-            print(f"[build_notebook] WARNING: {flag!r} is not in the Kaggle SDK's "
-                  f"documented accelerator list {sorted(_SDK_DOCUMENTED_ACCELERATORS)}. "
-                  f"An unrecognised value is ignored silently and you get the "
-                  f"default GPU instead — measured 2026-08-06, see "
+        if flag not in _VERIFIED_ACCELERATORS:
+            print(f"[build_notebook] WARNING: {flag!r} has never been observed to "
+                  f"work. Verified values: {sorted(_VERIFIED_ACCELERATORS)}. An "
+                  f"unrecognised value is ignored silently and you get the default "
+                  f"GPU instead — measured 2026-08-06, see "
                   f"docs/superpowers/experiments/kaggle-env-probe.md.")
 
     if KAGGLE_MODEL_DIR is None:

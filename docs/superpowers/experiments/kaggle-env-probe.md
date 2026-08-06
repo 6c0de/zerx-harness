@@ -34,6 +34,10 @@ Four versions were run:
 | 2 | none (re-push) | `--accelerator nvidiaRtx6000` | **Tesla P100-PCIE-16GB** |
 | 3 | `/kaggle/input` walk depth fix, new `attached_model` section | `--accelerator` omitted | **Tesla P100-PCIE-16GB** |
 | 4 | none (re-push) | `--accelerator NvidiaTeslaT4` | **Tesla T4** |
+| 6 | none (re-push) | `--accelerator NvidiaRtxPro6000` | **RTX PRO 6000 Blackwell Server Edition** |
+
+(v5 was a human-owner save from the Kaggle web UI, used to recover the
+correct accelerator string; its run was cancelled and produced no output.)
 
 ## Results
 
@@ -59,18 +63,25 @@ GPU. The same was true of the previous `ACCELERATOR = "t4"` default.
 - v2, `--accelerator nvidiaRtx6000` → P100 (the default)
 - v4, `--accelerator NvidiaTeslaT4` → **Tesla T4**
 
-The flag works. `nvidiaRtx6000` is silently ignored and falls back to the
-default rather than erroring. Consistent with the Kaggle SDK's own
-documented `machine_shape` options
-(`kagglesdk/kernels/types/kernels_api_service.py`), which list only
-`NvidiaTeslaT4`, `NvidiaTeslaP100`, and `Tpu1VmV38` — **no RTX 6000**.
+The flag works. `nvidiaRtx6000` — the starter's own name for the card — is
+silently ignored and falls back to the default rather than erroring.
 
-**Unresolved:** whether the scored *competition rerun* allocates different
-hardware than a commit run, and whether the RTX 6000 can be selected from
-the Kaggle web UI (which may expose options the CLI enum does not). Both
-`AGENTS.md` and the starter's README assert an ARC-AGI-3-exclusive RTX Pro
-6000; neither has been confirmed against a live run. Every probe run here
-reported `is_competition_rerun: false`.
+**The correct string is `NvidiaRtxPro6000`.** It appears in neither the
+starter nor the Kaggle SDK's documented `machine_shape` list
+(`kagglesdk/kernels/types/kernels_api_service.py` knows only
+`NvidiaTeslaT4`, `NvidiaTeslaP100`, `Tpu1VmV38`). It was recovered by
+having the human owner select the accelerator in the Kaggle web UI, then
+reading the server's own metadata back:
+
+```bash
+kaggle kernels pull enzeceb/zerx-kaggle-env-probe -m
+# -> "machine_shape": "NvidiaRtxPro6000"
+```
+
+Pushing with that value produced the RTX card on the first try (v6). This
+is the general technique worth remembering: when the CLI's documented enum
+is incomplete, set the option in the UI and read the server's metadata back
+rather than guessing strings.
 
 ### 2. On the assigned P100, PyTorch cannot run anything at all
 
@@ -80,7 +91,7 @@ Tesla P100-PCIE-16GB with CUDA capability sm_60 is not compatible with the curre
 
 `torch.cuda.is_available()` still returns `True`, so a naive readiness check
 would pass and then fail at the first kernel launch. The T4 (sm_75) is
-supported.
+supported, and the RTX PRO 6000 produced no such warning at all.
 
 ### 3. vLLM is not available, and cannot be made available offline
 
@@ -126,46 +137,71 @@ lowercase in the API (`transformers`, not the UI's `Transformers`):
 google/gemma-4/transformers/gemma-4-31b-it/1
 ```
 
-### 5. Host
+### 5. The RTX PRO 6000 has ~96 GB, not the 48 GB this project assumed
 
-Python 3.12.13, Linux 6.12.90, 4 CPUs, 33.7 GB RAM. Disk free:
-`/kaggle/working` 20.9 GB, `/tmp` 1102.5 GB, `/kaggle/input` 20.9 GB.
+The card, once actually obtained (v6):
 
-## Conclusion: `investigate`
+| | |
+|---|---|
+| Name | NVIDIA RTX PRO 6000 Blackwell Server Edition |
+| VRAM | 97887 MiB per `nvidia-smi`; `torch` reports 102.0 GB total |
+| Compute capability | **12.0** |
+| FP8 W8A8 capable | **yes** |
+| CPUs | 48 |
+| RAM | 189.9 GB |
+| PyTorch sm warnings | **none** |
 
-Not `keep` — no serving path is established. Not `revert` — the probe
-itself is sound and its findings are the reason to keep it.
+`AGENTS.md` and `docs/HANDOFF.md` both state 48 GB, and the 2026-08-06
+Colab/Kaggle quantization decision rests entirely on that figure: *"Kaggle's
+RTX Pro 6000 has 48GB VRAM — bf16 (~61.4GB weights) does not fit; it needs
+quantization regardless of what Colab needs."* **The premise is wrong.**
+62.58 GB of bf16 weights fit in ~96 GB with roughly 33 GB left for KV cache
+and activations, so no quantization is required on Kaggle at all.
 
-The blocking question is now hardware, not software. 62.58 GB of bf16
-weights need roughly 31 GB at 8-bit or 16 GB at 4-bit, before KV cache and
-activations. Neither obtainable card (P100 16GB, T4 16GB) can hold this
-model, and the P100 cannot run PyTorch at all. Phase B's serving design
-cannot be finalized until it is known which GPU the scored run gets.
+### 6. Host
 
-### Cheapest next tests, in order
+Python 3.12.13, Linux 6.12.90. Disk free: `/kaggle/working` 20.9 GB,
+`/tmp` 1102.5 GB, `/kaggle/input` 20.9 GB. Note `/kaggle/working` is far
+too small to copy the weights into — they must be loaded in place from
+`/kaggle/input`, which is a read-only mount.
 
-1. **Set the accelerator from the Kaggle web UI** on
-   `enzeceb/zerx-kaggle-env-probe` (Settings → Accelerator) and re-run.
-   The UI may expose options the CLI enum does not. Costs one probe run,
-   no submission slot. Requires the human owner — it is a UI action.
-2. **If the UI has no RTX 6000 either**, the remaining way to learn what
-   the scored rerun allocates is a real submission whose rerun path reports
-   its GPU. That costs a submission slot, and argues for sending a
-   deliberately cheap heuristics-only submission first rather than a
-   one-shot model submission into unknown hardware.
-3. Only once the card is known does the serving choice (`transformers`
-   in-process at some quantization, versus a vLLM wheels dataset, versus a
-   smaller Gemma variant) become answerable rather than speculative.
+The RTX runs on a different image than the default GPU shape:
+`gcr.io/kaggle-private-byod/python@sha256:37c64f7d...`. Package versions
+reported above were identical across both, but this is worth re-checking if
+a future run behaves differently.
 
-### Note on the mission target
+## Conclusion: `keep` the probe; Phase B is now unblocked
 
-`AGENTS.md` scopes this project to "Gemma-4-31B only". If the scored run
-turns out to provide a 16 GB card, that constraint is unsatisfiable and the
-scope needs an explicit human-owner decision, not a silent substitution.
-Gemma 4 also ships E2B, E4B, 12B, and 26B-A4B variants; the 26B-A4B MoE
-activates only ~3.8B parameters per token and the 12B is dense — either
-could be viable where the 31B is not. Recording this as a decision the
-owner must make, not one this session took.
+The hardware question that blocked the serving design is answered, and the
+answer is better than the project assumed.
+
+**Implications for Phase B, in order of how much they simplify it:**
+
+1. **No quantization is needed.** bf16 fits natively. This removes the
+   entire FP8/bitsandbytes problem — which matters, because `bitsandbytes`
+   is not installed and cannot be installed offline, making
+   `BitsAndBytesConfig` unusable despite `transformers` exposing it.
+2. **vLLM is not needed either, and cannot be had.** With bf16 fitting
+   directly and `transformers` 5.0.0 + `accelerate` 1.13.0 present, an
+   in-process backend loading straight from the read-only `/kaggle/input`
+   mount is both simpler and the only option that does not require
+   uploading a multi-gigabyte wheels dataset. vLLM's advantage is
+   throughput under concurrent load; whether that matters here depends on
+   ARC-HANDOFF-002 (the agent swarm plays games concurrently in threads),
+   which is a separate open decision.
+3. **The Colab fp8 parity decision should be revisited**, since its stated
+   reason no longer holds. Not changed here — it is recorded in
+   `docs/HANDOFF.md` as a human-owner decision and should be re-decided by
+   the owner, not silently reversed by this session.
+
+### Still unverified
+
+Every run here reported `is_competition_rerun: false`. Whether the scored
+rerun allocates the same shape as a commit run pushed with
+`--accelerator NvidiaRtxPro6000` has not been proven, and the only way to
+prove it is a real submission. A submission's run cell should therefore log
+its own GPU, so that if the hardware differs the result is diagnosable
+rather than merely disappointing.
 
 ## Probe defect found and fixed
 

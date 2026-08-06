@@ -229,6 +229,24 @@ def test_cpu_accelerator_produces_no_push_flag(monkeypatch):
     assert build_notebook.push_accelerator_flag() == ""
 
 
+def test_rtx6000_pushes_the_string_kaggle_actually_honours():
+    """The starter's own name for this card, "nvidiaRtx6000", is silently
+    ignored by the push API and yields a Tesla P100 instead. The value that
+    works is "NvidiaRtxPro6000", recovered from the server's own metadata
+    after selecting the accelerator in the Kaggle web UI. Both were measured
+    2026-08-06 — see docs/superpowers/experiments/kaggle-env-probe.md.
+    """
+    assert build_notebook._ACCELERATORS["rtx6000"]["push"] == "NvidiaRtxPro6000"
+    assert build_notebook.push_accelerator_flag() in build_notebook._VERIFIED_ACCELERATORS
+
+
+def test_probe_and_submission_request_the_same_card():
+    """The probe's answers only transfer if it ran on the submission's card."""
+    import build_probe_notebook
+
+    assert build_probe_notebook.PUSH_ACCELERATOR == build_notebook.push_accelerator_flag()
+
+
 def test_run_cell_installs_nothing_from_the_network():
     """Internet is disabled at evaluation time; every install must be offline."""
     for source in _cell_sources(build_notebook.build()):

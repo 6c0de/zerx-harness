@@ -49,7 +49,19 @@ KERNEL_SLUG = "zerx-kaggle-env-probe"
 # Same accelerator the scored run will use (AGENTS.md: Kaggle RTX Pro 6000,
 # 48GB, g4-standard-48, ARC-AGI-3-exclusive). Probing a T4 would answer
 # questions about a card we will never run on.
+#
+# This value goes into the notebook's own metadata, which Kaggle's push API
+# ignores — the accelerator is only ever applied via
+# `kaggle kernels push --accelerator`. It is set correctly anyway so the two
+# never disagree, but PUSH_ACCELERATOR below is the one that does the work.
 ACCELERATOR_NAME = "nvidiaRtx6000"
+
+# The real `machine_shape` string, recovered by selecting the accelerator in
+# the Kaggle web UI and reading the server's own metadata back with
+# `kaggle kernels pull -m`. The starter's "nvidiaRtx6000" is silently
+# ignored and yields a Tesla P100 instead; this one is honoured. Neither the
+# starter nor the Kaggle SDK's documented list mentions it.
+PUSH_ACCELERATOR = "NvidiaRtxPro6000"
 
 # Kaggle Models handle for the target weights, resolved live against the
 # Kaggle API on 2026-08-06 rather than transcribed from the UI:
