@@ -19,6 +19,7 @@ logs.log
 notebooks/submission.ipynb
 notebooks/colab_gemma_smoke.ipynb
 reference/
+traces/
 
 # OS / editors
 .DS_Store
