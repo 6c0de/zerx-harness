@@ -181,6 +181,42 @@ hardcoded URL.
   candidate first task for whichever of the 4 tracks below finishes
   first**, since it's small and independent of all 4 tracks' actual scope.
 
+## Colab/Kaggle quantization decision — **REVERSED 2026-08-06, its premise was measured false**
+
+The decision recorded in the section immediately below set Colab to 8-bit
+FP8 for one stated reason: *"Kaggle's RTX Pro 6000 has 48GB VRAM — bf16
+(~61.4GB weights) does not fit; it needs quantization regardless of what
+Colab needs."*
+
+**The 48GB figure was never measured.** The environment probe measured it
+(`docs/superpowers/experiments/kaggle-env-probe.md`): the card is an
+**NVIDIA RTX PRO 6000 Blackwell Server Edition with 97887 MiB — ~96GB**,
+and the attached weights are **62.58GB of bf16**. Confirmed alongside it:
+Colab's card is an **A100-SXM4-80GB**.
+
+So bf16 fits on both, with room to spare:
+
+| | VRAM | bf16 weights | spare |
+|---|---|---|---|
+| Kaggle RTX PRO 6000 Blackwell | ~96 GB | 62.58 GB | ~33 GB |
+| Colab A100-SXM4 | 80 GB | 62.58 GB | ~17 GB |
+
+The requirement that motivated the original decision — Colab must run the
+precision Kaggle actually deploys, so a Colab result is comparable to the
+deployment — is **unchanged and still honoured**, now at the higher
+precision instead of the lower one. `scripts/build_colab_notebook.py` drops
+`--quantization fp8` and keeps `--dtype bfloat16`; the saved result JSON
+records `"quantization": None` explicitly rather than omitting the key.
+
+One difference is deliberate and recorded rather than hidden: **the serving
+mechanism does not match, only the precision does.** Colab serves through
+vLLM (installable there, and a faster dev loop); Kaggle loads bf16
+in-process through `transformers`, because the probe found `vllm` absent
+from the image, internet disabled, and no vLLM in the competition's offline
+wheels.
+
+The original decision, kept for its reasoning trail, follows.
+
 ## Colab/Kaggle quantization decision (2026-08-06, branch `feat/baseline-120-8bit-quant-parity`)
 
 The "Colab state" above (bf16, A100-80GB) predates this decision and its
@@ -1246,7 +1282,24 @@ experiment file with GPU/precision/model revision.
 
 ### [P1] ARC-HANDOFF-002 — Concurrent game threads share mutable `GameAction` singletons
 
-**Status:** UNRESOLVED · **Source:** ARC-AUDIT-007 · **Category:** Correctness / concurrency
+**Status:** **SOLVED, 2026-08-06** · **Source:** ARC-AUDIT-007 ·
+**Category:** Correctness / concurrency
+
+> This entry is the original audit write-up and is kept for its problem
+> analysis. The fix and its evidence live in the second ARC-HANDOFF-002
+> section further down this file — the three-way merge left both copies, and
+> this status line used to still read UNRESOLVED, which contradicted it.
+>
+> Verified directly on `master`: `agent/my_agent.py` holds a module-level
+> `_ACTION_SUBMIT_LOCK`, and `take_action` re-applies this agent's own
+> `_pending_submit` to the shared enum *inside* that lock, in the same
+> critical section as the framework's read. `tests/test_concurrency_safety.py`
+> drives four threads through 60 submits each while deliberately corrupting
+> the shared singleton before every one, and asserts every submitted
+> coordinate belongs to the agent that chose it. It also covers the stale
+> payload being cleared on the exception-fallback path, and asserts the lock
+> is genuinely held at the moment the environment is stepped rather than
+> merely acquired earlier.
 
 #### Problem
 On Kaggle all games run **concurrently in threads**, and every thread
