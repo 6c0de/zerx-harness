@@ -207,6 +207,28 @@ def test_accelerator_matches_the_documented_arc_agi_3_target():
     assert kaggle_meta["isInternetEnabled"] is False
 
 
+def test_accelerator_is_exposed_as_a_push_flag_not_only_notebook_metadata():
+    """Kaggle's push API reads only `enable_gpu` from kernel-metadata.json and
+    ignores the notebook's own `metadata.kaggle.accelerator` entirely, so
+    selecting a GPU that way silently does nothing — measured 2026-08-06,
+    see docs/superpowers/experiments/kaggle-env-probe.md. The accelerator
+    must reach the CLI as a `--accelerator` argument.
+    """
+    assert build_notebook.push_accelerator_flag(), (
+        "a GPU accelerator must produce a --accelerator flag for the push"
+    )
+    # kernel-metadata.json carries no accelerator key at all; asserting it
+    # stays absent keeps anyone from "fixing" this by adding one there, which
+    # would look right and do nothing.
+    metadata = json.loads(build_notebook.METADATA_PATH.read_text(encoding="utf-8"))
+    assert "accelerator" not in metadata
+
+
+def test_cpu_accelerator_produces_no_push_flag(monkeypatch):
+    monkeypatch.setattr(build_notebook, "ACCELERATOR", "cpu")
+    assert build_notebook.push_accelerator_flag() == ""
+
+
 def test_run_cell_installs_nothing_from_the_network():
     """Internet is disabled at evaluation time; every install must be offline."""
     for source in _cell_sources(build_notebook.build()):

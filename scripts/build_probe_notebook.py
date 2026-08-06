@@ -239,7 +239,12 @@ _INPUT_CELL = dedent(
             return {"error": f"{root} does not exist"}
         for dirpath, dirnames, filenames in os.walk(root):
             depth = dirpath[len(root):].count(os.sep)
-            if depth >= 6:
+            # An attached Kaggle model sits at
+            # models/<owner>/<model>/<framework>/<instance>/<version>/ — depth
+            # 6 before a single weight file is even reached. The first run of
+            # this probe pruned at `depth >= 6` and so reported no weights at
+            # all, which looked exactly like "the model did not mount".
+            if depth >= 12:
                 dirnames[:] = []
                 continue
             # Weight files are what matter; list them with sizes, and count
@@ -259,6 +264,41 @@ _INPUT_CELL = dedent(
                     "total_files_in_dir": len(filenames),
                 }
         return {"weight_bearing_dirs": tree, "top_level": sorted(os.listdir(root))}
+
+
+    @section("attached_model")
+    def _attached_model():
+        \"\"\"Locate the attached weights and measure them.
+
+        Reported separately from the /kaggle/input walk because this is the
+        single fact Phase B cannot proceed without: the real filesystem path,
+        and whether the weights are actually there and how big they are.
+        \"\"\"
+        base = "/kaggle/input/models"
+        if not os.path.isdir(base):
+            return {"error": f"{base} does not exist -- no model attached"}
+
+        # Find every directory holding real weight shards, wherever it landed.
+        model_dirs = {}
+        for dirpath, _dirnames, filenames in os.walk(base):
+            shards = [f for f in filenames if f.endswith((".safetensors", ".bin", ".gguf"))]
+            if not shards:
+                continue
+            total = 0
+            for name in filenames:
+                try:
+                    total += os.path.getsize(os.path.join(dirpath, name))
+                except OSError:
+                    pass
+            model_dirs[dirpath] = {
+                "shard_count": len(shards),
+                "total_gb": round(total / 1e9, 2),
+                "config_files": sorted(f for f in filenames if f.endswith(".json"))[:15],
+            }
+        return {"model_dirs": model_dirs} if model_dirs else {
+            "error": "no weight shards found anywhere under /kaggle/input/models",
+            "listing": sorted(os.listdir(base)),
+        }
 
 
     @section("competition_dataset")

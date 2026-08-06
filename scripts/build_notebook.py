@@ -33,12 +33,44 @@ from typing import List
 ACCELERATOR = "rtx6000"
 
 # Internal mapping; don't edit unless Kaggle adds new options.
+#
+# `name` goes into the notebook's own metadata. Be aware that Kaggle's push
+# API **ignores it** — see `push_accelerator_flag()` below and
+# docs/superpowers/experiments/kaggle-env-probe.md. The values below are the
+# starter's; only the two marked `verified` have actually been observed to
+# be honoured by the API.
 _ACCELERATORS = {
-    "cpu":     {"name": "none",            "gpu": False},
-    "t4":      {"name": "nvidiaTeslaT4",   "gpu": True},
-    "p100":    {"name": "nvidiaTeslaP100", "gpu": True},
-    "rtx6000": {"name": "nvidiaRtx6000",   "gpu": True},
+    "cpu":     {"name": "none",            "gpu": False, "push": None},
+    "t4":      {"name": "nvidiaTeslaT4",   "gpu": True,  "push": "NvidiaTeslaT4"},    # verified 2026-08-06
+    "p100":    {"name": "nvidiaTeslaP100", "gpu": True,  "push": "NvidiaTeslaP100"},  # verified 2026-08-06 (Kaggle's default GPU)
+    "rtx6000": {"name": "nvidiaRtx6000",   "gpu": True,  "push": "nvidiaRtx6000"},    # NOT honoured — falls back to P100
 }
+
+# Accelerator values the Kaggle SDK actually documents
+# (kagglesdk/kernels/types/kernels_api_service.py's `machine_shape`).
+# `nvidiaRtx6000` is absent from that list and was observed to be silently
+# ignored rather than rejected.
+_SDK_DOCUMENTED_ACCELERATORS = {"NvidiaTeslaT4", "NvidiaTeslaP100", "Tpu1VmV38"}
+
+
+def push_accelerator_flag() -> str:
+    """The `--accelerator` argument `kaggle kernels push` needs, or "".
+
+    Selecting an accelerator by writing it into the notebook's
+    `metadata.kaggle.accelerator` — which is what this script (and the
+    upstream official starter) has always done — **does not work**. Kaggle's
+    push API reads exactly one GPU-related key from
+    `notebooks/kernel-metadata.json`, the `enable_gpu` bool, and nothing
+    reads the notebook's own accelerator field. The accelerator is carried
+    only by the CLI flag.
+
+    Measured 2026-08-06 with a controlled pair of runs
+    (docs/superpowers/experiments/kaggle-env-probe.md): pushing with
+    `--accelerator NvidiaTeslaT4` produced a Tesla T4, while pushing with
+    `--accelerator nvidiaRtx6000` produced a Tesla P100 — the default. The
+    flag works; that particular value does not, and fails silently.
+    """
+    return _ACCELERATORS[ACCELERATOR]["push"] or ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MODEL WIRING (docs/superpowers/specs/2026-08-06-kaggle-p0-model-attach-design.md)
@@ -405,6 +437,17 @@ def main() -> None:
             )
             print(f"[build_notebook] Synced {', '.join(changes)} in "
                   f"{METADATA_PATH.relative_to(ROOT)}")
+
+    flag = push_accelerator_flag()
+    if flag:
+        print(f"[build_notebook] Push with:  kaggle kernels push -p notebooks/ "
+              f"--accelerator {flag}")
+        if flag not in _SDK_DOCUMENTED_ACCELERATORS:
+            print(f"[build_notebook] WARNING: {flag!r} is not in the Kaggle SDK's "
+                  f"documented accelerator list {sorted(_SDK_DOCUMENTED_ACCELERATORS)}. "
+                  f"An unrecognised value is ignored silently and you get the "
+                  f"default GPU instead — measured 2026-08-06, see "
+                  f"docs/superpowers/experiments/kaggle-env-probe.md.")
 
     if KAGGLE_MODEL_DIR is None:
         print("[build_notebook] WARNING: KAGGLE_MODEL_DIR is None — this notebook "
