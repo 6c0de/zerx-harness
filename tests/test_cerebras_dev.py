@@ -1,6 +1,9 @@
+import io
+import urllib.error
+
 import pytest
 
-from zerx.backends.cerebras_dev import CerebrasDevBackend
+from zerx.backends.cerebras_dev import CerebrasDevBackend, _default_http_post
 
 
 def _fake_http_post(response_json, captured=None):
@@ -88,6 +91,34 @@ def test_raises_after_exhausting_retries():
 def test_never_constructs_when_platform_kaggle():
     with pytest.raises(ValueError):
         CerebrasDevBackend(model_id="gemma-4-31b", api_key="sk-test-not-real", platform="kaggle")
+
+
+def test_default_http_post_includes_the_response_body_on_http_error(monkeypatch):
+    """Cerebras's (and most OpenAI-compatible APIs') error responses carry
+    a JSON body explaining WHY a request was rejected, e.g. "Incorrect
+    API key provided" vs. "model access denied" -- very different root
+    causes. The bare HTTPError str() (e.g. "HTTP Error 401: Unauthorized")
+    discards that body entirely, which is exactly the gap that made a real
+    live 401 undiagnosable beyond "the server said no" (see
+    docs/HANDOFF.md's Decision.model_error work). Confirmed by reading
+    _default_http_post directly: it never calls exc.read() before this
+    fix.
+    """
+
+    def _fake_urlopen(request, timeout=None):
+        body = b'{"error": {"message": "Incorrect API key provided"}}'
+        raise urllib.error.HTTPError(
+            url="https://api.cerebras.ai/v1/chat/completions",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=io.BytesIO(body),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="Incorrect API key provided"):
+        _default_http_post("https://api.cerebras.ai/v1/chat/completions", {}, {}, 10.0)
 
 
 def test_request_sends_a_non_default_user_agent():

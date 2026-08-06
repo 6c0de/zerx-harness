@@ -28,13 +28,24 @@ _USER_AGENT = "zerx-harness-cerebras-dev/1.0"
 
 def _default_http_post(url: str, headers: dict, json_body: dict, timeout: float) -> dict:
     import json
+    import urllib.error
     import urllib.request
 
     request = urllib.request.Request(
         url, data=json.dumps(json_body).encode("utf-8"), headers=headers, method="POST"
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # The bare HTTPError str() ("HTTP Error 401: Unauthorized") discards
+        # the response body, which is where Cerebras (and most
+        # OpenAI-compatible APIs) actually explain *why* -- e.g. "Incorrect
+        # API key provided" vs. "model access denied" are very different
+        # root causes that were previously indistinguishable from a single
+        # generic 401.
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} {exc.reason}: {body}") from exc
 
 
 class CerebrasDevBackend:
