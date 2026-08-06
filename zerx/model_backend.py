@@ -10,12 +10,14 @@ GPU or a running server. The real server is started only in
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Protocol
 
-from zerx.backends.cerebras_dev import CerebrasDevBackend
 from zerx.config import Config
+
+logger = logging.getLogger(__name__)
 
 
 class ModelBackend(Protocol):
@@ -119,9 +121,34 @@ def select_backend(config: Config) -> ModelBackend:
     FakeModelBackend(responses=[...]) directly.
     """
     if config.backend == "fake":
+        if config.platform != "local":
+            # AGENTS.md: model initialization problems "must fail before
+            # gameplay rather than degrading an entire evaluation silently."
+            # We deliberately do NOT raise here (that would turn a
+            # misconfiguration into a zero-score run), but a fake backend off
+            # `local` means every generate() raises and the agent plays with
+            # no model at all — that must never be discovered only afterwards
+            # by reading the leaderboard.
+            logger.error(
+                "backend='fake' selected on platform=%r: every model call will "
+                "fail and the agent will run heuristics-only. Set ZERX_BACKEND "
+                "to a real backend for a scored run.",
+                config.platform,
+            )
         return FakeModelBackend()
     if config.backend in ("gemma_local", "gemma_kaggle"):
         return GemmaModelBackend(config.model_revision, base_url=config.gemma_base_url)
     if config.backend == "cerebras_dev":
+        # Imported lazily, INSIDE the one branch that can use it. The Kaggle
+        # bundle (scripts/build_notebook.py) deliberately ships only
+        # `zerx/*.py` and never `zerx/backends/`, so a module-level import of
+        # this would make `import zerx.model_backend` — and therefore
+        # `agent/my_agent.py` itself — raise ModuleNotFoundError on Kaggle,
+        # where there is no internet and no pip rescue. Keeping it lazy
+        # preserves the secret-hygiene exclusion AND keeps the bundle
+        # importable; the `cerebras_dev` branch is unreachable on Kaggle
+        # anyway (Config rejects it when platform=="kaggle").
+        from zerx.backends.cerebras_dev import CerebrasDevBackend
+
         return CerebrasDevBackend(model_id=config.model_revision, platform=config.platform)
     raise ValueError(f"Unknown backend: {config.backend!r}")

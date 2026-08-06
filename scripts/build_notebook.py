@@ -121,6 +121,15 @@ def build() -> dict:
     # import Config` etc. resolve on Kaggle, where internet is disabled and
     # there is no pip rescue. Written to /tmp/zerx/, same reasoning as the
     # agent cell below: keep it out of notebook outputs.
+    # IPython's `%%writefile` magic calls plain `open(filename, 'w')` with no
+    # `os.makedirs` (verified against IPython 9.x `OSMagics.writefile`), so
+    # writing to /tmp/zerx/<mod>.py raises FileNotFoundError on a fresh Kaggle
+    # kernel, where /tmp/zerx does not exist. Create the directory first.
+    mkdir_cell = code_cell(
+        "import os\n"
+        "os.makedirs('/tmp/zerx', exist_ok=True)"
+    )
+
     zerx_write_cells = [
         code_cell(f"%%writefile /tmp/zerx/{path.name}\n" + body)
         for path, body in zerx_bodies
@@ -252,6 +261,7 @@ def build() -> dict:
                 "`make submit`."
             ),
             install_cell,
+            mkdir_cell,
             *zerx_write_cells,
             write_agent_cell,
             run_cell,

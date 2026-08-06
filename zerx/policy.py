@@ -117,6 +117,15 @@ def _random_fallback(legal_actions: FrozenSet[ActionName], grid_size: int = 64) 
     return Action(name=name)
 
 
+# A 64x64 frame is legally allowed to segment into thousands of
+# single-cell objects (a two-colour checkerboard yields 4096), which
+# rendered ~49k tokens of object table into a single prompt — enough to
+# overflow the context window and fail or truncate the call outright.
+# The ranked click-candidate list, not this table, is what the model acts
+# on; the table is supporting detail, so bounding it costs little.
+_MAX_PROMPT_OBJECTS = 60
+
+
 def build_prompt(
     perception: PerceptionResult,
     memory: MemoryState,
@@ -135,13 +144,23 @@ def build_prompt(
     hint). Deliberately does not describe what ACTION1-ACTION5 *do* —
     AGENTS.md forbids hard-coding their semantics since they vary by game.
     """
+    shown_objects = perception.objects[:_MAX_PROMPT_OBJECTS]
     object_lines = (
         "\n".join(
             f"- {obj.label}: color={obj.color} size={obj.size} bbox={obj.bbox}"
-            for obj in perception.objects
+            for obj in shown_objects
         )
         or "(no non-background objects)"
     )
+    omitted = len(perception.objects) - len(shown_objects)
+    if omitted > 0:
+        # Tell the model the table is truncated rather than letting it assume
+        # it is exhaustive — a silently-cut list invites false "there is
+        # nothing else on the board" reasoning.
+        object_lines += (
+            f"\n(+{omitted} more objects not listed; "
+            f"showing the first {_MAX_PROMPT_OBJECTS} of {len(perception.objects)})"
+        )
     candidate_lines = (
         "\n".join(
             f"- {c.object_label}: click (x={c.x}, y={c.y}), score={c.score:.2f}"
