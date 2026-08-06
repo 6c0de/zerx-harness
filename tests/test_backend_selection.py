@@ -51,8 +51,15 @@ def test_select_backend_cerebras_dev_forwards_config_platform_argument(monkeypat
     value ("colab") that differs from CerebrasDevBackend's own default
     ("local") so a hardcoded/default-value bug in select_backend cannot
     accidentally pass this test.
+
+    `select_backend` imports CerebrasDevBackend lazily, inside the
+    cerebras_dev branch, so that the Kaggle bundle (which ships no
+    `zerx/backends/`) stays importable — see
+    tests/test_kaggle_bundle_importable.py. The patch target is therefore
+    the defining module, which the lazy import resolves at call time, not an
+    attribute of zerx.model_backend.
     """
-    import zerx.model_backend as model_backend_module
+    import zerx.backends.cerebras_dev as cerebras_module
 
     captured = {}
 
@@ -61,7 +68,7 @@ def test_select_backend_cerebras_dev_forwards_config_platform_argument(monkeypat
             captured["model_id"] = model_id
             captured["platform"] = platform
 
-    monkeypatch.setattr(model_backend_module, "CerebrasDevBackend", _RecordingCerebrasDevBackend)
+    monkeypatch.setattr(cerebras_module, "CerebrasDevBackend", _RecordingCerebrasDevBackend)
 
     config = Config(backend="cerebras_dev", platform="colab", model_revision="gemma-4-31b")
     backend = select_backend(config)

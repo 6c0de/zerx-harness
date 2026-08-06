@@ -22,9 +22,29 @@ def grid_hash(frame: GameFrame) -> str:
 _grid_hash = grid_hash
 
 
+def _shapes_match(before: GameFrame, after: GameFrame) -> bool:
+    return len(before.grid) == len(after.grid) and all(
+        len(row_b) == len(row_a) for row_b, row_a in zip(before.grid, after.grid)
+    )
+
+
 def _diff(
     before: GameFrame, after: GameFrame
 ) -> Tuple[int, Optional[Tuple[int, int, int, int]]]:
+    """A grid-shape change is itself a real transition, not a comparable
+    cell-by-cell diff. Two shapes actually occur in a live run: the very
+    first NOT_PLAYED frame has an empty grid (`FrameData.frame == []`), so
+    empty->64x64 used to report "no change" even though the whole board
+    appeared, and 64x64->empty used to raise IndexError out of finalize()
+    (silently costing the whole decision step via my_agent's crash
+    boundary). Report a shape change as "everything changed" with no bbox,
+    which is both true and safe for `TransitionRecord.effective`.
+    """
+    if not _shapes_match(before, after):
+        changed_cells = max(
+            sum(len(row) for row in before.grid), sum(len(row) for row in after.grid)
+        )
+        return changed_cells, None
     height = len(before.grid)
     width = len(before.grid[0]) if height else 0
     changed = [

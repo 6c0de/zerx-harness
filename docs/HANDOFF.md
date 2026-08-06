@@ -293,6 +293,41 @@ parallel tracks below (none of them touch Kaggle).
    signature, render them in the prompt text, re-run the same 8-game
    sweep. See `docs/superpowers/experiments/baseline-120.md` for full
    detail.
+
+   **Updated 2026-08-06 — PARTIALLY RESOLVED on
+   `feat/policy-prompt-legal-budget` (commit `e402a0d`), not yet on
+   `master`.** The code half of the fix candidate is done exactly as
+   described: `build_prompt()` now takes `legal_actions` (and `budget`),
+   renders `Legal actions this turn: ...`, and closes by binding the model
+   to that list; both `decide()` call sites pass them. Verified on that
+   branch against every other branch in the repo — no other branch
+   contains this fix.
+
+   *Evidence so far (key-free mechanism A/B, real local engine, real
+   `ls20` + `vc33` frames, 25 steps/game, 50 decisions/arm).* A simulated
+   model constrained to name only actions it can actually read in the
+   prompt — the precise capability this fix adds — was run against a
+   master-shaped prompt and the fixed prompt:
+
+   | Arm | `source="model"` | fallback |
+   |---|---|---|
+   | master prompt (no legal-actions line) | 0 | **50 (100%)** |
+   | fixed prompt (`legal_actions` rendered) | **50 (100%)** | 0 |
+
+   The master arm reproduces Track 4's recorded symptom exactly (every
+   decision falls through to the fallback chain). This confirms the
+   information channel was closed and is now open. **It does not measure
+   whether real `gemma-4-31b` scores better** — by construction the
+   simulated model always picks a legal name, which a real model may not.
+
+   *Still outstanding — do not close this item until done:* re-run the
+   original 8-game `cerebras_dev` sweep (`ls20, vc33, su15, tn36, ka59,
+   lf52, tr87, sc25`) and compare against `baseline-120`'s flat `0.0`
+   reference. All 8 games are available to the local engine; the only
+   blocker is that `CEREBRAS_API_KEY` was not present in the environment
+   when this was attempted. Note also that `MAX_ACTIONS` silently caps at
+   80 steps/game (open item 7 below), so the re-run must record its actual
+   step count rather than the requested one.
 7. **`scripts/play_local.py`'s `MyAgentCls.MAX_ACTIONS = min(MyAgentCls.MAX_ACTIONS,
    args.max_steps)` can only ever *lower* the step cap**, never raise it
    above `MyAgentCls`'s existing default (80, inherited from the vendored
