@@ -5,6 +5,104 @@ file per handoff under `docs/handoffs/` if the history grows long — not
 needed yet). See `docs/TEAM_WORKFLOW.md` for the 5-day schedule this feeds
 into.
 
+## 2026-08-07 — the free-reset strategy was wrong, and the gateway test is why we know
+
+**Read this before the entry below it, which it retracts.**
+
+The record-and-replay strategy, and its 1.6825 local score, were measured by
+driving `arc_agi` in process. Kaggle does not run that path. Its agent talks
+HTTP to a gateway sidecar with `competition_mode=True`, and `arc_agi/api.py`'s
+RESET handler deliberately refuses to execute a reset when `_action_count == 0`
+— exactly the condition the strategy needed to open a fresh, zero-action play.
+The guard exists only in competition mode, which is why the hole looked open
+locally.
+
+Measured through a real competition-mode gateway: `full_reset` frames 0,
+scorecard plays 1, 1869 actions in one play. **One play per game, actions
+cumulative, exploration charged to the next level.** The submission built on the
+old assumption was pushed but never submitted — the gateway test caught it
+first.
+
+**What this cost and what it bought.** It cost the 1.6825 result, which was
+worth nothing. It bought three things that are worth keeping:
+
+- `eval/gateway_smoke.py` — reproduces Kaggle's exact topology locally
+  (competition-mode gateway, HTTP wrapper) and exits non-zero if the play
+  mechanics do not hold. No submission should be spent without it passing.
+- `eval/local_rhae.py` — now runs through that gateway and **refuses to score a
+  non-HTTP wrapper**, so this class of mistake cannot recur silently.
+- `zerx/single_play.py` — a policy written for the real rules: careful while
+  the current level is still worth winning, unrestrained afterwards, because
+  actions on a level that is never completed cost nothing. Honest score:
+  **0.1153** on the 25 public games. HUD-noise masking was tried and did not
+  help (0.1140).
+
+**Current direction.** 0.1153 against a 1.20 target is a factor of ten, and the
+gap is game understanding, not search budget. The route being taken is a guarded
+fork of Tufa Labs' published Duck harness (leaderboard-verified 1.21), with our
+changes restricted to guards that prevent losing a run — see `docs/DUCK_FORK.md`
+for what was changed, what was deliberately not, and the honest score
+expectation. `scripts/build_duck_notebook.py` generates it.
+
+---
+
+## 2026-08-06 (late) — RETRACTED: the model-in-loop line was replaced, and a real score exists
+
+Read this before anything below it; the sections that follow describe the
+Gemma-4-31B line that this entry retires.
+
+**What happened.** The first scored Kaggle submission came back **0.05**. Root
+cause was not a bug in the agent but a mismatch with the metric. The
+competition scores Relative Human Action Efficiency, read out of the installed
+`arc_agi` 0.9.8 wheel (`arc_agi/scorecard.py`), not from documentation:
+
+```
+level_score = min(115, (human_baseline_actions / actions_on_that_level) ** 2 * 100)
+game_score  = sum(level_score_i * i) / sum(i for i in 1..L)
+total       = mean(game_score)
+```
+
+Actions are punished quadratically and counted per level from the previous
+level's completion. The old agent spent ~400 model-mediated actions per game
+against human level-1 baselines of 17-78, so even a completed level scored
+near zero.
+
+**Three mechanics were then found and verified live** (not inferred): a game's
+score is `max(run.score)` over its plays; two consecutive RESETs always open a
+fresh zero-action play (`full_reset` -> `new_play`), and `competition_mode`
+does not block that because it only guards making a second *environment*; and
+the engine is deterministic. Exploration is therefore free, and the only thing
+that scores is the shortest run that reaches a level.
+
+**What replaced it.** `zerx/replay_agent.py` — model-free best-of-N
+record-and-replay with delta-debugging minimisation, driven by a rewritten,
+policy-free `agent/my_agent.py`. Measured with the competition's own scorer via
+the new `eval/local_rhae.py`: **1.6825 total RHAE on all 25 public games**
+(previous submission: 0.05), which is exactly the ceiling of the 9 games that
+score — every one of them sits at its own `max_weights / total_weights`. Full
+record, including the two rollout-length experiments that were tried and
+rejected and the run-to-run variance:
+`docs/superpowers/experiments/replay-strategist-200.md`.
+
+**Kaggle.** Pushed as `sixcode/arc-agi-3-zerx-replay-strategist`, version 2
+(the repo's old `enzeceb/...` slug belongs to a different account and is not
+reachable with the available token; `kernel-metadata.json`'s `id` must match
+the title-derived slug or the push 409s). Save & Run All completed,
+`submission.parquet` produced. Clicking **Submit to Competition** is still a
+human action and had not been done as of this entry.
+
+**Open, deliberately not done:**
+
+- 16 of 25 public games still score 0.
+- `tests/` still targets the removed model-in-loop modules and was not updated.
+- `zerx/explorer.py` is superseded by `replay_agent.py` and is now dead code.
+- Nothing was committed; the working tree carries all of the above.
+- The `arXiv:2605.25931` null-coordinate engine defect was measured-adjacent
+  but **not used** — it is a library bug, likely closed in 0.9.8, and a
+  submission resting on it would not survive review.
+
+---
+
 - Updated at: 2026-08-06
 - Current owner: (local session, Claude Code — `baseline-120-followups` +
   `policy-prompt-legal-budget` + `colab-ready` integration)

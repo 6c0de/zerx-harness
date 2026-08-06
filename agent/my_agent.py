@@ -1,542 +1,178 @@
-"""Thin harness adapter — translates the real upstream Frame/GameAction API
-(see docs/superpowers/experiments/baseline-000.md for the exact verified
-names) into zerx's internal types, delegates to zerx.policy.decide(),
-finalizes the previous transition and feeds soft-affordance outcomes back,
-and translates the result back. Keep this file free of policy logic; it is
-glue only.
+"""Thin harness adapter: translates the framework's Frame/GameAction API into
+`zerx.single_play.SinglePlayAgent` calls and back.
+
+Keep this file free of policy. All strategy lives in `zerx/single_play.py`,
+which is unit-testable without the framework and drivable from
+`eval/local_rhae.py` against the competition's own scorer — through a real
+competition-mode gateway, which is the only topology whose numbers transfer
+(see `docs/HANDOFF.md`, 2026-08-07).
 
 Contract (enforced by the vendored `agents.agent.Agent` ABC):
-  - Subclass `agents.agent.Agent`.
-  - Class must be named `MyAgent` (the notebook's __init__.py registers it).
-  - Implement `is_done(frames, latest_frame) -> bool`.
-  - Implement `choose_action(frames, latest_frame) -> GameAction`.
+  - subclass `agents.agent.Agent`
+  - the class must be named `MyAgent` (the notebook's `__init__.py` registers it)
+  - implement `is_done(frames, latest_frame) -> bool`
+  - implement `choose_action(frames, latest_frame) -> GameAction`
+
+Two framework details this adapter has to work around, both verified against
+the vendored source rather than assumed:
+
+* `Agent.MAX_ACTIONS` defaults to 80 and `Agent.main()` reads it off the
+  instance. Left alone it caps every game at 81 actions — far below what the
+  strategist needs, and invisible in the logs as anything but a low score.
+
+* `GameAction` members are process-wide singletons and `.set_data(...)` mutates
+  the shared member in place, while the framework reads `action.action_data`
+  later, inside `do_action_request`. `Swarm` runs one thread per game, so
+  between our write and that read another game's thread can overwrite the
+  coordinates — one game submitting another game's click. `take_action`
+  re-applies this agent's own payload under a process-wide lock, in the same
+  critical section as the read.
 """
 from __future__ import annotations
 
 import logging
+import os
 import threading
-import time
-from collections import deque
-from dataclasses import replace
-from datetime import datetime, timezone
-from typing import Deque, List, Optional, Tuple
+from typing import List, Optional
 
-# Verified against the vendored arcengine/agents packages
-# (docs/superpowers/experiments/baseline-000.md, Task 1, Step 5).
 from arcengine import FrameData, GameAction, GameState
 
-# When run inside the ARC-AGI-3-Agents framework (locally or on Kaggle)
-# the `agents` package is on sys.path, so this import resolves.
 from agents.agent import Agent
 
-from zerx.config import Config
-from zerx.exact_state_memory import ExactStateMemory, action_signature
-from zerx.heuristics import DeadSignatureTracker
-from zerx.memory import (
-    MemoryState,
-    StructuredMemoryState,
-    confirm_hypothesis,
-    maybe_refresh_structured,
-    record_notable_failure,
-)
-from zerx.model_backend import select_backend
-from zerx.perception import perceive
-from zerx.policy import Decision, _FALLBACK_PREFERENCE, decide
-from zerx.trace import TraceRecorder, JsonlTraceWriter, TraceMeta, build_trace_step
-from zerx.transitions import (
-    TransitionLedger,
-    TransitionRecord,
-    _describe_action as describe_action,
-    grid_hash,
-)
-from zerx.types import Action, ActionName, GameFrame
+from zerx.single_play import ActionKey, SinglePlayAgent, as_grid
 
 logger = logging.getLogger(__name__)
 
-# ARC-HANDOFF-002. On Kaggle every game runs in its own thread of one
-# process (`agents/swarm.py` starts a Thread per agent), and `GameAction`
-# members are process-wide singletons whose payload `.set_data(...)`
-# mutates in place. The framework reads `action.action_data` *later*, in
-# `do_action_request`, so between our write and that read another game's
-# thread can overwrite the coordinates — one game submitting another
-# game's click. That also poisons TransitionLedger/ExactStateMemory, which
-# record the action we intended rather than the one actually sent, so the
-# evidence loop learns from fiction.
-#
-# This lock closes the window without patching the vendored framework and
-# without serializing gameplay: `take_action` below re-applies this
-# agent's own payload and calls straight through to `do_action_request`,
-# both inside the lock, so no other thread can interleave between the
-# write and the read. Only the submit itself is serialized — perception,
-# the model call, and everything else in `choose_action` stay concurrent.
 _ACTION_SUBMIT_LOCK = threading.Lock()
 
 
-def _to_game_frame(frame: FrameData) -> GameFrame:
-    """Translate the real upstream FrameData into our internal GameFrame.
+def _policy_from_env(game_id: str = "") -> SinglePlayAgent:
+    """Build the policy from ZERX_* environment variables.
 
-    - `frame.frame` is a list of animation sub-frames; the current 64x64
-      grid is the LAST one (`frame.frame[-1]`), and the list is `[]` when
-      nothing has rendered yet (e.g. NOT_PLAYED).
-    - `frame.available_actions` lists only the currently-legal NON-RESET
-      action ids; RESET is always implicitly legal and is unioned in here
-      unconditionally. Ids are mapped via `GameAction.from_id(...)`, NOT
-      `GameAction(...)` — the latter raises `ValueError` for every non-RESET
-      id. `GameAction`'s custom `__init__` reassigns `self._value_` to the
-      plain int action id, but Python's Enum machinery already built
-      `_value2member_map_` from the original `(action_id, action_type)`
-      tuple before `__init__` ran, so value-based lookup (`GameAction(1)`)
-      never matches. `.from_id()` avoids this by linear-scanning `.value`
-      instead of using that stale map (verified directly against the
-      vendored `arcengine` package, not assumed).
-    - `frame.state` is a GameState enum; both NOT_PLAYED and GAME_OVER map
-      to `is_game_over=True` so decide()'s terminal short-circuit fires on
-      a game's very first call as well as after a death.
-    - FrameData has no field literally named `.score`, but it does expose
-      `levels_completed` (verified in `arcengine.enums.FrameData`), and in
-      ARC-AGI-3 level completion IS the scored progress signal. Map it onto
-      `GameFrame.score` so it actually reaches the pipeline: it is what makes
-      `TransitionRecord.score_delta` (and therefore `.effective`) able to
-      report "that action completed a level" instead of being hardcoded to 0,
-      and it is the `level_delta` channel `ExactStateMemory` records. Leaving
-      it at 0 silently blinded the agent to its only progress feedback.
+    Every knob is an env var so a Kaggle run can be retuned without editing
+    bundled source, and so the configuration is recorded by the run rather than
+    implied by whichever code happened to ship.
     """
-    sub_frames = frame.frame
-    grid_rows = sub_frames[-1] if sub_frames else []
-    grid = tuple(tuple(row) for row in grid_rows)
-    legal = frozenset(
-        {
-            ActionName[GameAction.from_id(action_id).name]
-            for action_id in frame.available_actions
-        }
-        | {ActionName.RESET}
-    )
-    is_game_over = frame.state in (GameState.NOT_PLAYED, GameState.GAME_OVER)
-    return GameFrame(
-        grid=grid,
-        legal_actions=legal,
-        is_game_over=is_game_over,
-        score=frame.levels_completed,
+    def _f(name: str, default: float) -> float:
+        try:
+            return float(os.environ[name])
+        except (KeyError, ValueError):
+            return default
+
+    return SinglePlayAgent(
+        max_seconds=_f("ZERX_GAME_SECONDS", 600.0),
+        max_actions=int(_f("ZERX_MAX_ACTIONS", 20_000)),
+        sticky=_f("ZERX_STICKY", 0.7),
+        careful_budget=int(_f("ZERX_CAREFUL_BUDGET", 220)),
+        noise_fraction=_f("ZERX_NOISE_FRACTION", 0.35),
+        # Per game, so two games never draw the same sequence. Seeded rather
+        # than left to the clock so a run is reproducible.
+        seed=int(_f("ZERX_SEED", 0)) + (abs(hash(game_id)) % 997 if game_id else 0),
     )
 
 
-def _to_game_action(action: Action) -> GameAction:
-    """`GameAction` members are singletons; `.set_data(...)` mutates the
-    shared member's `.action_data` in place and returns it. The real
-    starter's own random-baseline agent relies on this exact pattern
-    (calling `.set_data` on the enum member itself), so we replicate it
-    rather than trying to construct a new, independent GameAction.
+def _config_signature() -> str:
+    """A short digest of the ZERX_* settings actually in force.
+
+    Attached to every action's reasoning so a recorded run says which
+    configuration produced it, instead of leaving it to be guessed from the
+    code that happened to be deployed.
     """
-    upstream = GameAction[action.name.value]
-    if action.name == ActionName.ACTION6:
-        upstream.set_data({"x": action.x, "y": action.y})
-    return upstream
+    import hashlib
 
-
-def _find_object_by_label(frame: GameFrame, label: str):
-    """Recompute perception just far enough to look up the LabeledObject a
-    past Decision targeted, so its outcome can be recorded. Cheap (no GPU,
-    no model call) — perception is already deterministic and pure.
-    """
-    for obj in perceive(frame).objects:
-        if obj.label == label:
-            return obj
-    return None
-
-
-def _shapes_match(a: GameFrame, b: GameFrame) -> bool:
-    """True iff `a.grid` and `b.grid` have identical dimensions. Guards the
-    exact-state outcome-feedback block (baseline-115-exact-state-memory)
-    against `zerx.transitions._diff`'s shape assumption — `_diff` only
-    iterates over `before`'s dimensions, so a before/after grid-shape
-    mismatch (e.g. the very first frame's empty NOT_PLAYED grid transitioning
-    to a real grid) can silently misreport "no change" instead of a real
-    diff. `zerx/transitions.py` is shared infrastructure and is not modified
-    for this fix; the guard lives here instead.
-    """
-    return len(a.grid) == len(b.grid) and all(
-        len(row_a) == len(row_b) for row_a, row_b in zip(a.grid, b.grid)
+    relevant = sorted(
+        f"{k}={v}" for k, v in os.environ.items() if k.startswith("ZERX_")
     )
-
-
-def _safe_fallback_action(latest_frame: FrameData) -> GameAction:
-    """Last-resort action used when the normal `choose_action` path raises.
-
-    Deliberately independent of everything that might have just failed: no
-    `decide()`, no `_to_game_frame`, no other zerx module. Works only off
-    the raw upstream `latest_frame.available_actions` (a `list[int]`),
-    mapped id-by-id via `GameAction.from_id` (skipping any id that itself
-    raises), returning the first that succeeds. Falls back to
-    `GameAction.RESET` (always constructible) if the list is empty or
-    `latest_frame` itself is unusable. Wrapped in its own try/except so
-    this helper itself can never raise.
-
-    `GameAction` members are process-wide singletons, so whichever member
-    this returns may still carry `.reasoning` set by an earlier, unrelated
-    normal decision (see `_choose_action_inner`) — always overwrite it here
-    so a crash-recovery action never gets recorded as if it came from the
-    normal decide() pipeline.
-    """
-    try:
-        available = getattr(latest_frame, "available_actions", None) or []
-        for action_id in available:
-            try:
-                action = GameAction.from_id(action_id)
-                action.reasoning = {"source": "exception_fallback"}
-                return action
-            except Exception:
-                continue
-    except Exception:
-        pass
-    GameAction.RESET.reasoning = {"source": "exception_fallback"}
-    return GameAction.RESET
+    return hashlib.sha256("|".join(relevant).encode()).hexdigest()[:12]
 
 
 class MyAgent(Agent):
+    MAX_ACTIONS = 1_000_000  # the strategist owns its own budget; see below
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._config = Config.from_env()
-        # The vendored `agents.agent.Agent` base hardcodes MAX_ACTIONS = 80 as
-        # a generic anti-infinite-loop guard, and `Agent.main()` reads
-        # `self.MAX_ACTIONS` off the instance. Inheriting it capped every
-        # Kaggle game at 81 actions — a hard ceiling well below what reaching
-        # a level completion takes, and invisible in the logs as anything but
-        # a low score. Set it from config (ZERX_MAX_ACTIONS) so the cap is a
-        # recorded, ablatable decision instead of an upstream default.
-        self.MAX_ACTIONS = self._config.max_actions
-        self._memory = MemoryState()
-        self._dead_signatures = DeadSignatureTracker()
-        self._backend = select_backend(self._config)
-        self._transitions = TransitionLedger()
-        # The evidence the model is shown each step: what its own recent
-        # actions actually did. The ledger already produced these records;
-        # until now nothing kept or read them (see zerx/transitions.py's
-        # render_transition_history).
-        self._recent_transitions: Deque[TransitionRecord] = deque(maxlen=20)
-        self._exact_state_memory = ExactStateMemory()
-        self._actions_taken = 0
-        self._pending_decision: Optional[Decision] = None
-        # ARC-HANDOFF-002: this agent's own intended action/reasoning for
-        # the step currently in flight, kept off the shared GameAction
-        # singleton so take_action can re-apply it under the submit lock.
-        self._pending_submit: Optional[Action] = None
-        self._last_reasoning: Optional[dict] = None
-        self._pending_before_frame: Optional[GameFrame] = None
-        # --- baseline-130-hypothesis (feat/baseline-130-hypothesis-memory) ---
-        self._structured_memory = StructuredMemoryState()
-        # --- end baseline-130-hypothesis ---
-        trace_recorder: Optional[TraceRecorder] = None
-        if self._config.trace_export_path:
-            writer = JsonlTraceWriter(self._config.trace_export_path)
-            writer.write_meta(
-                TraceMeta(
-                    game_id=self.game_id,
-                    seed=0,
-                    backend=self._config.backend,
-                    config_hash=self._config.config_hash(),
-                    started_at=datetime.now(timezone.utc).isoformat(),
-                )
-            )
-            trace_recorder = writer
-        self.trace_recorder: Optional[TraceRecorder] = trace_recorder
+        self.MAX_ACTIONS = int(os.getenv("ZERX_HARD_ACTION_CAP", "1000000"))
+        self._strategist = _policy_from_env(str(self.game_id))
+        self._config_hash = _config_signature()
+        self._pending: Optional[ActionKey] = None
+        self._finished = False
 
-    def _structured_summarizer(
-        self, state: StructuredMemoryState, recent_context: str
-    ) -> StructuredMemoryState:
-        """Turn the recorded transition evidence into structured memory.
-
-        Deterministic and model-free, same reasoning as
-        `zerx/transitions.summarize_transitions`: reflection must not become
-        a second unbounded reasoning loop (AGENTS.md). An action observed to
-        change the board becomes a confirmed rule; one that never once did
-        becomes a notable failure. Kept here rather than in `zerx/memory.py`
-        so that module stays free of any transition-ledger dependency.
-        """
-        effective = {
-            describe_action(r.action) for r in self._recent_transitions if r.effective
-        }
-        useless = {
-            describe_action(r.action)
-            for r in self._recent_transitions
-            if not r.effective
-        } - effective
-
-        for name in sorted(effective):
-            state = confirm_hypothesis(state, f"{name} changes the board")
-        failures = {
-            f"{name} did nothing every time it was tried" for name in useless
-        } - set(state.notable_failures)
-        for failure in sorted(failures):
-            state = record_notable_failure(state, failure)
-        return state
-
-    @property
-    def _change_classifier(self):
-        """`Config.duck_objects_on` used to appear only in `config.py` and
-        `eval/run_ablation.py`'s matrix — nothing read it, so every A/B on
-        it was guaranteed to report "no effect" (ARC-HANDOFF-003). It now
-        selects whether each transition gets a semantic label from
-        `zerx/scene.py`'s object-level classifier (HUD_ONLY, OBJECT_MOVE,
-        RECOLOR_OR_TRANSFORM, ...) in the evidence block the model reads,
-        instead of only a raw changed-cell count. Off by default: the
-        classifier segments and boundary-traces both frames, which is real
-        per-action CPU.
-        """
-        if not self._config.duck_objects_on:
-            return None
-
-        def classify(before: GameFrame, after: GameFrame) -> str:
-            from zerx.scene import classify_transition, correspond_objects, perceive_scene
-
-            before_scene = perceive_scene(before)
-            after_scene = perceive_scene(after)
-            return classify_transition(
-                before_scene,
-                after_scene,
-                correspond_objects(before_scene, after_scene),
-                terminal=after.is_game_over,
-                level_delta=after.score - before.score,
-            )
-
-        return classify
+    # ---- framework contract -------------------------------------------
 
     def is_done(self, frames: List[FrameData], latest_frame: FrameData) -> bool:
-        # Stop once we win. Don't stop on GAME_OVER — we want to RESET and
-        # retry (matches the real starter's own default behavior).
-        if latest_frame.state is GameState.WIN:
-            return True
-        # Wall-clock guard. `Agent.main()` sets self.timer before the first
-        # action and checks is_done() before every subsequent one, so this
-        # bounds a single game's runtime. Raising max_actions raises
-        # wall-clock exposure against Kaggle's ~9h notebook limit; without
-        # this, one slow or hung model turns the entire run into a kill with
-        # no scorecard at all, instead of costing one game its tail. Disabled
-        # when max_wall_seconds is 0.
-        limit = self._config.max_wall_seconds
-        if limit > 0 and getattr(self, "timer", 0):
-            elapsed = time.time() - self.timer
-            if elapsed >= limit:
-                logger.warning(
-                    "%s: wall-clock guard hit (%.0fs >= %ds) after %d actions; "
-                    "ending this game early to protect the overall run budget",
-                    self.game_id,
-                    elapsed,
-                    limit,
-                    self.action_counter,
-                )
-                return True
-        return False
+        """Stop only when the policy says so.
 
-    def _choose_action_inner(
-        self, frames: List[FrameData], latest_frame: FrameData
-    ) -> GameAction:
-        frame = _to_game_frame(latest_frame)
-
-        # Finalize the PREVIOUS action's transition now that its result
-        # (this frame) exists. Never do this before the frame arrives.
-        record = self._transitions.finalize(frame, classifier=self._change_classifier)
-        if record is not None:
-            self._recent_transitions.append(record)
-        if (
-            record is not None
-            and self._pending_decision is not None
-            and self._pending_decision.target_object_label is not None
-            and self._pending_before_frame is not None
-        ):
-            target = _find_object_by_label(
-                self._pending_before_frame, self._pending_decision.target_object_label
-            )
-            if target is not None:
-                self._dead_signatures.record_outcome(target, effective=record.effective)
-
-        # --- baseline-115-exact-state-memory (feat/baseline-115-exact-state-memory) ---
-        if (
-            self._config.exact_state_suppression_on
-            and record is not None
-            and self._pending_decision is not None
-            and self._pending_before_frame is not None
-            and _shapes_match(self._pending_before_frame, frame)
-        ):
-            # level_delta now carries real signal: _to_game_frame maps
-            # FrameData.levels_completed onto GameFrame.score, so score_delta
-            # is +1 exactly on the transition that completed a level.
-            self._exact_state_memory.record_outcome(
-                state_signature=grid_hash(self._pending_before_frame),
-                action_signature=action_signature(self._pending_decision.action),
-                visible_change=record.changed_pixels > 0,
-                level_delta=record.score_delta,
-            )
-        # --- end baseline-115-exact-state-memory ---
-
-        history: Tuple[GameFrame, ...] = tuple(_to_game_frame(f) for f in frames[-4:])
-        decision, self._memory = decide(
-            frame=frame,
-            history=history,
-            memory=self._memory,
-            dead_signatures=self._dead_signatures,
-            config=self._config,
-            backend=self._backend,
-            actions_taken=self._actions_taken,
-            recent_transitions=tuple(self._recent_transitions),
-            structured_memory=(
-                self._structured_memory if self._config.structured_memory_on else None
-            ),
-        )
-
-        if decision.model_error is not None:
-            # Previously silent: decide() swallows a model-backend failure
-            # with no logging anywhere, so a real run could fall back every
-            # single step with zero visibility into why (confirmed against
-            # real cerebras_dev traces where 100% of calls raised and
-            # nothing surfaced it). Logged here, not inside decide(), so
-            # decide() stays a pure, side-effect-free function.
-            logger.warning(
-                "model call failed this step: %s (source=%s)",
-                decision.model_error,
-                decision.source,
-            )
-
-        # --- baseline-115-exact-state-memory (feat/baseline-115-exact-state-memory) ---
-        # Guarded by `not frame.is_game_over`: decide()'s terminal
-        # short-circuit (zerx/policy.py) always returns RESET on a
-        # GAME_OVER/NOT_PLAYED frame, and that must never be swapped out —
-        # doing so would permanently break the reset-and-retry loop the
-        # instant (state, RESET) itself becomes a recorded no-op.
-        if not frame.is_game_over and self._config.exact_state_suppression_on:
-            state_sig = grid_hash(frame)
-            if self._exact_state_memory.is_suppressed(state_sig, action_signature(decision.action)):
-                replacement = None
-                for name in _FALLBACK_PREFERENCE:
-                    if name not in frame.legal_actions or name == decision.action.name:
-                        continue
-                    candidate = (
-                        Action(name=name, x=32, y=32)
-                        if name == ActionName.ACTION6
-                        else Action(name=name)
-                    )
-                    # The candidate itself may ALSO be a known no-op for this
-                    # exact state — skip past it too, instead of swapping in
-                    # another suppressed action (which would defeat the
-                    # feature's whole purpose of escaping a repeated no-op).
-                    if not self._exact_state_memory.is_suppressed(
-                        state_sig, action_signature(candidate)
-                    ):
-                        replacement = candidate
-                        break
-                if replacement is not None:
-                    decision = replace(
-                        decision,
-                        action=replacement,
-                        source="fallback_exact_state_suppressed",
-                        target_object_label=None,
-                    )
-                # else: every legal alternative is also a known no-op for
-                # this exact state -- leave `decision` unchanged rather than
-                # invent an unvalidated move (project fallback philosophy).
-        # --- end baseline-115-exact-state-memory ---
-
-        if self.trace_recorder is not None:
-            try:
-                self.trace_recorder.record(
-                    build_trace_step(
-                        step_index=self._actions_taken,
-                        game_id=self.game_id,
-                        frame=frame,
-                        decision=decision,
-                        levels_completed=latest_frame.levels_completed,
-                        game_state=latest_frame.state.name,
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001 - a dev-only observability
-                # sink (disk full, permissions, etc.) must never be able to
-                # alter real agent behavior or desync the transition ledger
-                # / action counter below -- log and continue as if untraced.
-                logger.warning(
-                    "trace_recorder.record failed: %s: %s; continuing without "
-                    "tracing this step",
-                    type(exc).__name__,
-                    exc,
-                )
-
-        self._actions_taken += 1
-
-        # --- baseline-130-hypothesis (feat/baseline-130-hypothesis-memory) ---
-        if self._config.structured_memory_on:
-            # `summarizer` used to be `lambda prev, ctx: prev`, so the
-            # structured state could never become non-empty -- and nothing
-            # read it either, so the flag ran a full perceive() flood-fill
-            # every action to feed a no-op whose output was discarded
-            # (ARC-HANDOFF-003). It now both feeds a real summarizer and
-            # reaches the prompt via decide(structured_memory=...).
-            self._structured_memory = maybe_refresh_structured(
-                self._structured_memory,
-                recent_context=perceive(frame).ascii_grid,
-                summarizer=self._structured_summarizer,
-                refresh_interval=self._config.memory_refresh_interval,
-            )
-        # --- end baseline-130-hypothesis ---
-
-        self._transitions.begin(frame, decision.action)
-        self._pending_decision = decision
-        self._pending_before_frame = frame
-
-        # Remember what this agent actually decided, independently of the
-        # shared enum member's mutable payload — `take_action` re-applies it
-        # under _ACTION_SUBMIT_LOCK immediately before the framework reads
-        # it (ARC-HANDOFF-002).
-        self._pending_submit = decision.action
-        upstream = _to_game_action(decision.action)
-        # AGENTS.md step 8: record the decision path, fallback/repair status,
-        # and configuration ID so it reaches the framework's recorder. The
-        # vendored `Agent.do_action_request` reads `.reasoning` straight off
-        # the GameAction enum member (see vendor/ARC-AGI-3-Agents/agents/agent.py).
-        self._last_reasoning = {
-            "source": decision.source,
-            "repaired": decision.repaired,
-            "config_hash": self._config.config_hash(),
-        }
-        upstream.reasoning = self._last_reasoning
-        return upstream
+        Deliberately not stopping on GAME_OVER: a game over is recoverable with
+        a RESET, which the gateway serves as a level reset, so the play — and
+        every level it has already banked — survives it. Stopping there would
+        throw away the rest of the game for nothing.
+        """
+        return self._finished
 
     def choose_action(self, frames: List[FrameData], latest_frame: FrameData) -> GameAction:
-        """Guarantee (plan Global Constraint; AGENTS.md's control-flow and
-        testing-gate sections): this must never raise an unhandled
-        exception. `_choose_action_inner` already implements a validated
-        fallback chain internally (see zerx.policy.decide), but this outer
-        boundary catches anything unexpected — e.g. a future game handing
-        back an out-of-range action id, or an internal zerx bug — and
-        degrades to `_safe_fallback_action` instead of crashing the run.
+        """Never raises. A crash here would end a game with whatever score it
+        had; degrading to RESET keeps the run alive instead.
         """
         try:
-            return self._choose_action_inner(frames, latest_frame)
-        except Exception as exc:  # noqa: BLE001 - intentional catch-all boundary
+            action = self._choose(latest_frame)
+        except Exception as exc:  # noqa: BLE001 - intentional outer boundary
             logger.error(
-                "choose_action raised %s: %s; falling back to a safe action",
-                type(exc).__name__,
-                exc,
+                "%s: choose_action raised %s: %s; falling back to RESET",
+                self.game_id, type(exc).__name__, exc,
             )
-            # No trusted intended action for this step — tell take_action not
-            # to re-apply a stale payload from the previous decision.
-            self._pending_submit = None
-            self._last_reasoning = None
-            return _safe_fallback_action(latest_frame)
+            self._pending = None
+            return GameAction.RESET
+
+        if action is None:
+            self._finished = True
+            self._pending = None
+            return GameAction.RESET
+
+        name, x, y = action
+        self._pending = action
+        upstream = GameAction[name]
+        if name == "ACTION6":
+            upstream.set_data({"x": x, "y": y})
+        upstream.reasoning = {
+            "source": "single_play",
+            "phase": "careful" if self._strategist.careful else "reckless",
+            "actions": self._strategist.actions_used,
+            "levels": self._strategist.levels,
+            "config_hash": self._config_hash,
+        }
+        return upstream
 
     def take_action(self, action: GameAction) -> Optional[FrameData]:
-        """Re-apply this agent's own decision to the shared `GameAction`
-        singleton and submit it, both under a process-wide lock.
-
-        See `_ACTION_SUBMIT_LOCK` above. `choose_action` already called
-        `.set_data(...)`, but that happened an unbounded amount of wall
-        time earlier — a concurrent game's thread can overwrite it before
-        the framework reads `action.action_data` inside
-        `do_action_request`. Re-applying here, in the same critical section
-        as the read, is what actually makes the submitted coordinates this
-        game's own.
-        """
         with _ACTION_SUBMIT_LOCK:
-            pending = getattr(self, "_pending_submit", None)
-            if pending is not None and pending.name == ActionName.ACTION6:
-                action.set_data({"x": pending.x, "y": pending.y})
-            if self._last_reasoning is not None:
-                action.reasoning = self._last_reasoning
+            pending = self._pending
+            if pending is not None and pending[0] == "ACTION6":
+                action.set_data({"x": pending[1], "y": pending[2]})
             return super().take_action(action)
+
+    # ---- translation ---------------------------------------------------
+
+    def _choose(self, latest_frame: FrameData) -> Optional[ActionKey]:
+        sub_frames = latest_frame.frame
+        grid = as_grid(sub_frames[-1]) if len(sub_frames) else ()
+
+        # `available_actions` lists only currently-legal NON-RESET action ids;
+        # RESET is always implicitly legal. Ids map via `GameAction.from_id`,
+        # never `GameAction(id)`: the enum's custom __init__ rewrites _value_
+        # after Python already built _value2member_map_ from the original
+        # tuple, so value lookup never matches for anything but RESET.
+        legal = []
+        for action_id in latest_frame.available_actions or []:
+            try:
+                legal.append(GameAction.from_id(action_id).name)
+            except Exception:  # noqa: BLE001 - an unknown id is not fatal
+                continue
+        legal.append("RESET")
+
+        state = latest_frame.state
+        return self._strategist.step(
+            grid=grid,
+            legal=legal,
+            levels_completed=latest_frame.levels_completed,
+            game_over=state in (GameState.GAME_OVER, GameState.NOT_PLAYED),
+            won=state is GameState.WIN,
+        )

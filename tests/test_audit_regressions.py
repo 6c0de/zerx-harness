@@ -83,37 +83,6 @@ def test_score_delta_reports_level_completion():
     assert record.effective is True, "completing a level must count as effective"
 
 
-def test_to_game_frame_maps_levels_completed_onto_score():
-    """Adapter-level check that the progress signal is actually read off the
-    upstream FrameData rather than hardcoded to 0.
-    """
-    import sys
-    from pathlib import Path
-
-    # Same vendored-framework path setup tests/test_my_agent.py uses:
-    # agent/my_agent.py imports `from agents.agent import Agent`.
-    vendor = Path(__file__).resolve().parents[1] / "vendor" / "ARC-AGI-3-Agents"
-    if str(vendor) not in sys.path:
-        sys.path.insert(0, str(vendor))
-
-    from arcengine import FrameData, GameState
-
-    from agent.my_agent import _to_game_frame
-
-    frame = FrameData(
-        game_id="test",
-        frame=[[[0, 0], [0, 0]]],
-        state=GameState.NOT_FINISHED,
-        levels_completed=3,
-        available_actions=[1],
-    )
-
-    assert _to_game_frame(frame).score == 3
-
-
-# --- ARC-AUDIT-006: unbounded object table blew up the prompt --------------
-
-
 def test_prompt_object_table_is_bounded_on_a_pathological_frame():
     """A two-colour 64x64 checkerboard segments into 4096 single-cell
     objects — a legal frame that rendered ~49k tokens of object table and

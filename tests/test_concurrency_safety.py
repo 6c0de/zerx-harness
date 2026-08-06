@@ -19,7 +19,6 @@ if str(VENDOR) not in sys.path:
 from arcengine import FrameData, GameAction, GameState  # noqa: E402
 
 from agent.my_agent import MyAgent  # noqa: E402
-from zerx.types import Action, ActionName  # noqa: E402
 
 
 def _make_agent(game_id: str) -> MyAgent:
@@ -76,8 +75,8 @@ def test_submitted_coordinates_belong_to_the_agent_that_chose_them():
             x = y = agent_index
             mine = []
             for _ in range(60):
-                agent._pending_submit = Action(name=ActionName.ACTION6, x=x, y=y)
-                agent._last_reasoning = {"game": agent_index}
+                agent._pending = ("ACTION6", x, y)
+                GameAction.ACTION6.reasoning = {"game": agent_index}
                 # Deliberately corrupt the shared singleton first, the way a
                 # concurrent game's choose_action would.
                 GameAction.ACTION6.set_data({"x": 63, "y": 63})
@@ -103,18 +102,22 @@ def test_submitted_coordinates_belong_to_the_agent_that_chose_them():
 
 
 def test_a_crashed_step_does_not_resubmit_the_previous_decisions_payload():
-    """`_safe_fallback_action` is used when choose_action raises. The stale
-    `_pending_submit` from the last good step must not be re-applied to it.
+    """When `choose_action` falls back after an exception, the stale `_pending`
+    from the last good step must not survive — `take_action` re-applies it to
+    the shared enum member, so leaving it set would submit a coordinate from a
+    step that never happened.
     """
     env = _RecordingEnv()
     agent = _make_agent("game-crash")
     agent.arc_env = env
-    agent._pending_submit = Action(name=ActionName.ACTION6, x=11, y=22)
+    agent._pending = ("ACTION6", 11, 22)
 
-    def boom(frames, latest_frame):
+    def boom(latest_frame):
         raise RuntimeError("simulated internal failure")
 
-    agent._choose_action_inner = boom
+    # The private hop `choose_action` delegates to; raising here exercises the
+    # outer boundary exactly as an internal policy bug would.
+    agent._choose = boom
     frame = FrameData(
         frame=[[[0, 0], [0, 0]]],
         state=GameState.NOT_FINISHED,
@@ -122,8 +125,8 @@ def test_a_crashed_step_does_not_resubmit_the_previous_decisions_payload():
     )
     action = agent.choose_action([frame], frame)
 
-    assert agent._pending_submit is None
-    assert action.reasoning == {"source": "exception_fallback"}
+    assert agent._pending is None
+    assert action is GameAction.RESET
 
 
 def test_normal_single_threaded_reasoning_is_still_attached():
@@ -155,8 +158,8 @@ def test_the_payload_is_reapplied_inside_the_submit_lock_not_merely_before_it():
 
     agent = _make_agent("game-lock")
     agent.arc_env = _LockObservingEnv()
-    agent._pending_submit = Action(name=ActionName.ACTION6, x=5, y=6)
-    agent._last_reasoning = {"game": 1}
+    agent._pending = ("ACTION6", 5, 6)
+    GameAction.ACTION6.reasoning = {"game": 1}
 
     assert my_agent_module._ACTION_SUBMIT_LOCK.locked() is False
     agent.take_action(GameAction.ACTION6)

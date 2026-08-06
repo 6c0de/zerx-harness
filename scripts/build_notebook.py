@@ -84,67 +84,44 @@ def push_accelerator_flag() -> str:
     return _ACCELERATORS[ACCELERATOR]["push"] or ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODEL WIRING (docs/superpowers/specs/2026-08-06-kaggle-p0-model-attach-design.md)
+# RUN CONFIGURATION
 #
-# Until these were set, a submission ran with no language model at all and
-# said nothing about it: kernel-metadata.json had an empty `model_sources`,
-# nothing here set ZERX_BACKEND, so `Config.backend` fell to its default
-# "fake", `select_backend` returned a `FakeModelBackend` with no scripted
-# responses, every generate() raised, and the agent played heuristics-only
-# through its own fallback chain. No crash, no error, just a meaningless
-# score (docs/HANDOFF.md, ARC-HANDOFF-001).
+# This notebook ships no language model. The scoring rules, measured through a
+# real competition-mode gateway (eval/gateway_smoke.py) rather than assumed:
+#
+#   * `level_score = min(115, (human_baseline / actions_on_that_level)**2 * 100)`,
+#     with a level's actions counted from the previous level's completion.
+#   * One play per game. `arc_agi/api.py`'s RESET handler refuses to execute a
+#     reset when `_action_count == 0`, so exploration cannot be reset away — it
+#     is charged to whichever level completes next.
+#
+# So a level is won or lost in its first ~2-3x the human baseline, and actions
+# after that are nearly worthless — which is what `zerx/single_play.py`'s
+# careful/reckless split encodes.
+#
+# The honest score for this agent is **0.1153** on the 25 public games. That is
+# far below the leaderboard, and the route being taken for a competitive score
+# is the guarded Duck fork (scripts/build_duck_notebook.py, docs/DUCK_FORK.md).
+# This notebook remains the deployment path for our own agent.
+#
+# Every knob is an env var (read by `agent.my_agent._policy_from_env`) so a run
+# can be retuned without editing bundled source.
 # ─────────────────────────────────────────────────────────────────────────────
-ZERX_BACKEND = "gemma_kaggle"
-ZERX_PLATFORM = "kaggle"
-ZERX_GEMMA_BASE_URL = "http://localhost:8000/v1/chat/completions"
-
-# Kaggle Models handle for the weights, synced into
-# notebooks/kernel-metadata.json's `model_sources` by main() so the two can
-# never drift apart. Keep in step with scripts/build_probe_notebook.py's
-# MODEL_SOURCE — the probe must attach the same weights the submission does,
-# or its mount-path answer does not transfer.
-MODEL_SOURCE = "google/gemma-4/transformers/gemma-4-31b-it/1"
-
-# Offline wheels for a transformers new enough to know Gemma 4.
-#
-# The Kaggle image ships transformers 5.0.0. The checkpoint declares
-# `model_type: gemma4` / `Gemma4ForConditionalGeneration` and was saved by
-# 5.5.0.dev0, and loading it on 5.0.0 fails outright:
-#
-#   ValueError: The checkpoint you are trying to load has model type `gemma4`
-#   but Transformers does not recognize this architecture.
-#
-# Gemma 4 support landed in transformers 5.5.0. There is no way around the
-# version: the model directory carries no modeling code and `auto_map` is
-# null, so `trust_remote_code=True` has nothing to load, and internet is
-# disabled at evaluation time. Measured on real Kaggle hardware by
-# notebooks/model-smoke — see docs/superpowers/experiments/kaggle-env-probe.md.
-#
-# 5.5.0 exactly, not the newest release: it is the lowest version that
-# supports Gemma 4, and its requirements are all satisfied by what the image
-# already has (huggingface-hub 1.11.0 against <2.0,>=1.5.0; tokenizers 0.22.2
-# against <=0.23.0,>=0.22.0; safetensors 0.7.0; numpy 2.0.2). A newer
-# transformers risks demanding a newer tokenizers or hub, which would mean
-# replacing compiled packages that torch 2.10 is built against.
-WHEELS_DATASET = "enzeceb/zerx-transformers-wheels"
-
-# Filesystem path the attached Gemma weights mount at, under /kaggle/input.
-#
-# Deliberately None until Phase B. The Kaggle Models UI label
-# ("google/gemma-4/Transformers/gemma-4-31b-it") is an organizational path,
-# not a filesystem path — and separately is not a valid Hugging Face repo id
-# either (docs/HANDOFF.md, Day 2 item 2), so it cannot simply be guessed.
-# `notebooks/probe/probe.ipynb` (scripts/build_probe_notebook.py) reports the
-# real path; fill it in from that result.
-#
-# While it is None the generated notebook still builds — but refuses to play
-# on Kaggle, loudly and immediately. That refusal is the point: AGENTS.md
-# requires model initialization failures to "fail before gameplay rather than
-# degrading an entire evaluation silently", and shipping a submission that
-# quietly has no model is the exact failure this whole change exists to end.
-KAGGLE_MODEL_DIR: str | None = (
-    "/kaggle/input/models/google/gemma-4/transformers/gemma-4-31b-it/1"
-)
+ZERX_ENV = {
+    # Wall clock, not action count, is the scarce resource: `Swarm` runs one
+    # thread per game, so every game is live at once and they share the 9h.
+    "ZERX_GAME_SECONDS": "1800",        # per game; games run concurrently
+    "ZERX_MAX_ACTIONS": "20000",        # per game, guards against one game hogging
+    "ZERX_HARD_ACTION_CAP": "2000000",  # lifts the framework's MAX_ACTIONS=80
+    # `careful_budget` is the action count after which the current level is
+    # treated as lost and exploration goes unrestrained. Public level-1 human
+    # baselines run 17-78 actions; past ~4x the top of that a level scores
+    # under 1% however it ends.
+    "ZERX_CAREFUL_BUDGET": "220",
+    "ZERX_STICKY": "0.7",
+    "ZERX_NOISE_FRACTION": "0.35",
+    "ZERX_SEED": "0",
+}
 
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_SRC = ROOT / "agent" / "my_agent.py"
@@ -200,207 +177,6 @@ def markdown_cell(source: str) -> dict:
     return {"cell_type": "markdown", "metadata": {}, "source": source}
 
 
-TRANSFORMERS_INSTALL_SOURCE = dedent(
-    '''\
-    """Install a transformers new enough to load Gemma 4, entirely offline.
-
-    See WHEELS_DATASET in scripts/build_notebook.py for why this is needed at
-    all. Nothing is fetched from the network -- --no-index guarantees it.
-    """
-    import glob, os, subprocess, sys, zipfile
-
-    # Locate the attached wheels wherever Kaggle mounted them, rather than
-    # hardcoding a path: dataset mount points have bitten this project before.
-    # Find the wheel itself, anywhere under /kaggle/input, rather than
-    # guessing the mount path.
-    #
-    # Kaggle's layout is not stable across kernels: one kernel mounted this
-    # dataset flat at /kaggle/input/zerx-transformers-wheels, another nested it
-    # under /kaggle/input/datasets/. A glob written for either shape fails on
-    # the other, and each failure costs a run. What does not vary is the
-    # filename we actually need.
-    TARGET = "transformers-5.5.0-py3-none-any.whl"
-
-    def _find_wheel_dir():
-        for root, _dirs, files in os.walk("/kaggle/input"):
-            if TARGET in files:
-                return root
-        return None
-
-    wheel_dir = _find_wheel_dir()
-
-    if wheel_dir is None:
-        # Kaggle sometimes keeps a zip-uploaded directory as a .zip rather than
-        # expanding it, and --find-links needs real .whl files. Expand any
-        # archive that plausibly holds them, then look again.
-        archives = glob.glob("/kaggle/input/**/*.zip", recursive=True)
-        if archives:
-            os.makedirs("/tmp/wheels", exist_ok=True)
-            for archive in archives:
-                try:
-                    with zipfile.ZipFile(archive) as handle:
-                        handle.extractall("/tmp/wheels")
-                except zipfile.BadZipFile:
-                    continue
-            if os.path.exists(os.path.join("/tmp/wheels", TARGET)):
-                wheel_dir = "/tmp/wheels"
-            else:
-                for root, _dirs, files in os.walk("/tmp/wheels"):
-                    if TARGET in files:
-                        wheel_dir = root
-                        break
-
-    if wheel_dir is None:
-        # Report what IS mounted. "Not attached" and "attached somewhere I did
-        # not look" need completely different fixes, and a bare failure cannot
-        # tell them apart.
-        tree = []
-        for root, dirs, _files in os.walk("/kaggle/input"):
-            if root.count(os.sep) <= 4:
-                tree.append(root)
-            else:
-                dirs[:] = []
-        raise SystemExit(
-            f"{TARGET} was not found anywhere under /kaggle/input. Directories "
-            f"seen: {sorted(tree)[:60]}. Expected it from the dataset "
-            "'WHEELS_DATASET_LITERAL'. If kernel-metadata.json already lists "
-            "that under dataset_sources, note that a newly created kernel's "
-            "first run can start before its data sources finish attaching -- "
-            "pushing again is usually enough."
-        )
-
-    found = glob.glob(os.path.join(wheel_dir, "*.whl"))
-    print(f"{len(found)} wheels under {wheel_dir}")
-
-    # The version pin is load-bearing. An unpinned `transformers` is
-    # "already satisfied" by the image's 5.0.0, so pip does nothing at all and
-    # the install reports success while changing none of the problem -- which
-    # is exactly what the first attempt did.
-    #
-    # --no-deps on purpose: a plain resolve would pull the newer numpy in the
-    # wheel set and replace the one torch 2.10 was built against. Every
-    # dependency transformers 5.5.0 declares is already satisfied by the image,
-    # confirmed on the same run (regex 2025.11.3, typer 0.24.2, click 8.3.3,
-    # rich 13.9.4, and the rest all present), so transformers is the only
-    # package that needs to change.
-    packages = ["transformers==5.5.0"]
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--no-index", "--no-deps",
-         "--find-links", wheel_dir, *packages],
-        capture_output=True, text=True,
-    )
-    print(result.stdout[-2000:])
-    if result.returncode != 0:
-        print(result.stderr[-3000:])
-        raise SystemExit("offline transformers install failed")
-
-    # Confirm the version that is now importable, and that it recognises the
-    # architecture -- installing the wheel is not the same as fixing the load.
-    check = subprocess.run(
-        [sys.executable, "-c",
-         "import transformers;"
-         "from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES;"
-         "print(transformers.__version__, 'gemma4' in CONFIG_MAPPING_NAMES)"],
-        capture_output=True, text=True,
-    )
-    print("transformers now:", check.stdout.strip() or check.stderr[-1000:])
-    if "True" not in check.stdout:
-        raise SystemExit(
-            "transformers still does not recognise gemma4 after the install"
-        )
-    '''
-).replace("WHEELS_DATASET_LITERAL", WHEELS_DATASET)
-
-
-READINESS_GATE_SOURCE = dedent(
-    '''\
-    """Prove the model is really there and really answers, before any game runs.
-
-    Generated by scripts/build_notebook.py; runs as its own process so the
-    62.58 GB it loads is released before `main.py` loads its own copy.
-
-    AGENTS.md: "Model initialization failures and out-of-memory conditions
-    must fail before gameplay rather than degrading an entire evaluation
-    silently." Exits non-zero on any problem; the notebook turns that into a
-    hard stop.
-    """
-    import os
-    import subprocess
-    import sys
-
-    sys.path.insert(0, os.getcwd())
-
-    model_dir = os.environ["ZERX_MODEL_PATH"]
-    if not os.path.isdir(model_dir):
-        sys.exit(f"ZERX_MODEL_PATH={model_dir!r} is not a directory")
-
-    # Record the hardware we actually got. Every environment probe so far ran
-    # with is_competition_rerun=false, so it is NOT proven that a scored rerun
-    # allocates the same shape a --accelerator push does. If it differs, this
-    # line is what makes the result diagnosable rather than merely
-    # disappointing.
-    try:
-        gpu = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,memory.total,compute_cap",
-             "--format=csv,noheader"],
-            capture_output=True, text=True).stdout.strip()
-    except FileNotFoundError:
-        # No nvidia-smi at all means no GPU was attached. Say so plainly
-        # instead of dying here with a FileNotFoundError traceback that looks
-        # like a bug in the gate rather than a misconfigured kernel.
-        gpu = "NOT FOUND -- nvidia-smi is absent, so this kernel has no GPU"
-    print("GPU:", gpu, flush=True)
-
-    from zerx.config import Config
-    from zerx.model_backend import select_backend
-
-    config = Config.from_env()
-    backend = select_backend(config)
-    name = type(backend).__name__
-    print("resolved backend:", name)
-    print("config hash:", config.config_hash())
-    print("config:", config.to_json(), flush=True)
-
-    if name == "FakeModelBackend":
-        sys.exit(
-            "select_backend() resolved to FakeModelBackend, whose every "
-            "generate() raises -- the agent would play heuristics-only and "
-            "report a meaningless score."
-        )
-    if name == "GemmaModelBackend":
-        # An HTTP client for a vLLM server. There is none here and there
-        # cannot be: vllm is absent from the Kaggle image, internet is
-        # disabled, and the competition's offline wheels do not ship it
-        # (docs/superpowers/experiments/kaggle-env-probe.md). Every call would
-        # raise ConnectionRefused and the agent would fall through to
-        # heuristics silently -- which the FakeModelBackend check above does
-        # NOT catch, because the class is different.
-        sys.exit(
-            "select_backend() resolved to GemmaModelBackend, an HTTP client "
-            "for a vLLM server that does not exist on Kaggle. Use "
-            "backend='gemma_kaggle' (in-process transformers)."
-        )
-
-    warmup_seconds = backend.warmup()
-    latency = backend.last_latency_seconds
-    print(f"weights loaded + first generation: {warmup_seconds:.1f}s")
-    print(f"steady-state per-call latency: {latency:.2f}s")
-
-    # The per-game action cap has never been calibrated against a real Gemma
-    # call. ~25 games x max_actions is what has to fit in Kaggle's ~9 hours,
-    # and model time is only part of that.
-    projected_hours = 25 * config.max_actions * latency / 3600
-    print(f"projected: 25 games x {config.max_actions} actions = "
-          f"{projected_hours:.1f}h of model time (kernel limit ~9h)")
-    if projected_hours > 7.0:
-        print(f"WARNING: {projected_hours:.1f}h of model time leaves little room "
-              f"under the ~9h kernel limit. Lower ZERX_MAX_ACTIONS if the run is "
-              f"cut off mid-game.", flush=True)
-    print("readiness gate passed", flush=True)
-    '''
-)
-
-
 def build() -> dict:
     if not AGENT_SRC.exists():
         raise SystemExit(f"Could not find {AGENT_SRC}")
@@ -441,8 +217,6 @@ def build() -> dict:
         "    arc-agi python-dotenv"
     )
 
-    transformers_install_cell = code_cell(TRANSFORMERS_INSTALL_SOURCE)
-
     # Bundle zerx/*.py (top-level modules only — never zerx/backends/, the
     # Cerebras dev-only module) so `agent/my_agent.py`'s `from zerx.config
     # import Config` etc. resolve on Kaggle, where internet is disabled and
@@ -470,31 +244,27 @@ def build() -> dict:
         "%%writefile /tmp/my_agent.py\n" + agent_body
     )
 
-    write_gate_cell = code_cell(
-        "%%writefile /tmp/zerx_readiness_gate.py\n" + READINESS_GATE_SOURCE
-    )
-
+    env_prefix = " ".join(f"{k}={v}" for k, v in ZERX_ENV.items())
     run_cell_source = dedent(
-        """\
-        import os
+        """        import os
 
         if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
             # Wait for the gateway sidecar to be ready.
-            !curl --fail --retry 999 --retry-all-errors --retry-delay 5 \\
+            !curl --fail --retry 999 --retry-all-errors --retry-delay 5 \
                   --retry-max-time 600 http://gateway:8001/api/games
 
             # Copy the framework into a writable location.
-            !cp -r /kaggle/input/competitions/arc-prize-2026-arc-agi-3/ARC-AGI-3-Agents \\
+            !cp -r /kaggle/input/competitions/arc-prize-2026-arc-agi-3/ARC-AGI-3-Agents \
                    /kaggle/working/ARC-AGI-3-Agents
 
             # Copy the zerx package alongside it so `import zerx` resolves —
             # main.py runs with cwd /kaggle/working/ARC-AGI-3-Agents, which is
             # on sys.path via cwd.
-            !mkdir -p /kaggle/working/ARC-AGI-3-Agents && \\
+            !mkdir -p /kaggle/working/ARC-AGI-3-Agents && \
                 cp -r /tmp/zerx /kaggle/working/ARC-AGI-3-Agents/zerx
 
             # Drop our agent in as a framework template.
-            !cp /tmp/my_agent.py \\
+            !cp /tmp/my_agent.py \
                 /kaggle/working/ARC-AGI-3-Agents/agents/templates/my_agent.py
 
             # Register MyAgent in the framework's agent registry. We rewrite
@@ -528,85 +298,24 @@ def build() -> dict:
         RECORDINGS_DIR=/kaggle/working/server_recording
         \"\"\")
 
-            # ---- model readiness gate ----
-            # Resolve the backend exactly as MyAgent will, and refuse to play
-            # if it comes back as the no-op FakeModelBackend. AGENTS.md:
-            # "Model initialization failures and out-of-memory conditions must
-            # fail before gameplay rather than degrading an entire evaluation
-            # silently." Before this gate existed, a submission with no model
-            # attached was indistinguishable from a working one until the
-            # leaderboard came back.
-            #
-            # Run in-process (not via `!`) on purpose: a shell command's
-            # non-zero exit is swallowed by IPython, so only a real Python
-            # exception actually stops the notebook here.
+            # Import gate: a typo or a missing bundled module must fail here,
+            # loudly, rather than 9 hours later as a mysteriously empty score.
+            # In-process on purpose — IPython swallows a shell command's
+            # non-zero exit, so only a real Python exception stops the notebook.
             import sys
+            sys.path.insert(0, '/tmp')
+            from zerx.single_play import SinglePlayAgent
+            print('policy import OK:', SinglePlayAgent.__module__)
 
-            KAGGLE_MODEL_DIR = MODEL_DIR_LITERAL
-            if KAGGLE_MODEL_DIR is None:
-                raise SystemExit(
-                    "KAGGLE_MODEL_DIR is not set in scripts/build_notebook.py, so "
-                    "no model weights have been located under /kaggle/input. "
-                    "Run notebooks/probe/probe.ipynb "
-                    "(scripts/build_probe_notebook.py) to resolve the real mount "
-                    "path, set the constant, rebuild, and push again. Refusing to "
-                    "play heuristics-only and report it as a scored run."
-                )
-            if not os.path.isdir(KAGGLE_MODEL_DIR):
-                raise SystemExit(
-                    f"KAGGLE_MODEL_DIR={KAGGLE_MODEL_DIR!r} does not exist. The "
-                    "model source is either not attached to this kernel or mounts "
-                    "elsewhere; check kernel-metadata.json's model_sources against "
-                    "the probe notebook's /kaggle/input listing."
-                )
-
-            # Run the readiness gate as its own process, NOT in this kernel.
-            # It loads all 62.58 GB of weights to prove they load; if that
-            # happened here, the notebook kernel would still be holding them
-            # when `main.py` starts below and tries to load a second copy, and
-            # even a ~96 GB card cannot hold two. Exiting the process is what
-            # releases the VRAM.
-            import subprocess as _sp
-
-            _gate = _sp.run(
-                [sys.executable, '/tmp/zerx_readiness_gate.py'],
-                cwd='/kaggle/working/ARC-AGI-3-Agents',
-                env={**os.environ,
-                     'ZERX_BACKEND': 'ZERX_BACKEND_LITERAL',
-                     'ZERX_PLATFORM': 'ZERX_PLATFORM_LITERAL',
-                     'ZERX_MODEL_PATH': KAGGLE_MODEL_DIR},
-            )
-            if _gate.returncode != 0:
-                raise SystemExit(
-                    f"readiness gate failed (exit {_gate.returncode}) -- see its "
-                    "output above. Refusing to start a scored run that would "
-                    "silently play without a model."
-                )
-
-            # Run it. The gateway records every action and emits submission.parquet.
-            # ZERX_* are passed on the command line rather than left to the .env
-            # above: main.py runs in a separate process, and an explicit prefix
-            # does not depend on when the framework happens to call load_dotenv().
-            !cd /kaggle/working/ARC-AGI-3-Agents && \\
-                MPLBACKEND=agg \\
-                ZERX_BACKEND=ZERX_BACKEND_LITERAL \\
-                ZERX_PLATFORM=ZERX_PLATFORM_LITERAL \\
-                ZERX_GEMMA_BASE_URL=ZERX_GEMMA_BASE_URL_LITERAL \\
-                ZERX_MODEL_PATH=MODEL_DIR_PLAIN \\
+            # ZERX_* go on the command line rather than into the .env above:
+            # main.py runs in a separate process, and an explicit prefix does
+            # not depend on when the framework happens to call load_dotenv().
+            !cd /kaggle/working/ARC-AGI-3-Agents && \
+                MPLBACKEND=agg \
+                ZERX_ENV_PREFIX \
                 python main.py --agent myagent
         """
-    )
-    # Substituted rather than f-string-interpolated: the cell body above
-    # contains literal braces (the AVAILABLE_AGENTS dict it writes out), which
-    # an f-string would try to evaluate.
-    run_cell_source = (
-        run_cell_source
-        .replace("MODEL_DIR_LITERAL", repr(KAGGLE_MODEL_DIR))
-        .replace("MODEL_DIR_PLAIN", KAGGLE_MODEL_DIR or "")
-        .replace("ZERX_BACKEND_LITERAL", ZERX_BACKEND)
-        .replace("ZERX_PLATFORM_LITERAL", ZERX_PLATFORM)
-        .replace("ZERX_GEMMA_BASE_URL_LITERAL", ZERX_GEMMA_BASE_URL)
-    )
+    ).replace("ZERX_ENV_PREFIX", env_prefix)
     run_cell = code_cell(run_cell_source)
 
     dummy_submission_cell = code_cell(
@@ -665,11 +374,9 @@ def build() -> dict:
                 "`make submit`."
             ),
             install_cell,
-            transformers_install_cell,
             mkdir_cell,
             *zerx_write_cells,
             write_agent_cell,
-            write_gate_cell,
             run_cell,
             dummy_submission_cell,
         ],
@@ -695,13 +402,16 @@ def main() -> None:
             meta["enable_gpu"] = wanted_gpu
             changes.append(f"enable_gpu={wanted_gpu}")
 
-        if meta.get("model_sources") != [MODEL_SOURCE]:
-            meta["model_sources"] = [MODEL_SOURCE]
-            changes.append(f"model_sources=[{MODEL_SOURCE!r}]")
+        # Both are cleared deliberately. The agent loads no model and needs no
+        # extra wheels; leaving a stale attachment behind would add minutes of
+        # mount time to every run for nothing.
+        if meta.get("model_sources") != []:
+            meta["model_sources"] = []
+            changes.append("model_sources=[]")
 
-        if meta.get("dataset_sources") != [WHEELS_DATASET]:
-            meta["dataset_sources"] = [WHEELS_DATASET]
-            changes.append(f"dataset_sources=[{WHEELS_DATASET!r}]")
+        if meta.get("dataset_sources") != []:
+            meta["dataset_sources"] = []
+            changes.append("dataset_sources=[]")
 
         if changes:
             METADATA_PATH.write_text(
@@ -720,11 +430,6 @@ def main() -> None:
                   f"unrecognised value is ignored silently and you get the default "
                   f"GPU instead — measured 2026-08-06, see "
                   f"docs/superpowers/experiments/kaggle-env-probe.md.")
-
-    if KAGGLE_MODEL_DIR is None:
-        print("[build_notebook] WARNING: KAGGLE_MODEL_DIR is None — this notebook "
-              "will refuse to play on Kaggle. Run scripts/build_probe_notebook.py "
-              "first and set the constant from its /kaggle/input listing.")
 
 
 if __name__ == "__main__":

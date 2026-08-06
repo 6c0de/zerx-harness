@@ -27,3 +27,10 @@ traces/
 .idea/
 .vscode/
 notebooks/model-smoke/model-smoke.ipynb
+
+# Generated from Tufa Labs' published notebook by scripts/build_duck_notebook.py.
+# Not committed: it is a derivative of their content and the upstream GitHub
+# repository carries no licence. The patch script and docs/DUCK_FORK.md record
+# exactly what we change; regenerate with `python scripts/build_duck_notebook.py`.
+notebooks/duck/duck.ipynb
+reference/
