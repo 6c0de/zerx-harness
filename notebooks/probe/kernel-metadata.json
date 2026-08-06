@@ -15,6 +15,6 @@
     "arc-prize-2026-arc-agi-3"
   ],
   "model_sources": [
-    "google/gemma-4/transformers/gemma-4-31b-it"
+    "google/gemma-4/transformers/gemma-4-31b-it/1"
   ]
 }

@@ -60,7 +60,7 @@ ZERX_GEMMA_BASE_URL = "http://localhost:8000/v1/chat/completions"
 # never drift apart. Keep in step with scripts/build_probe_notebook.py's
 # MODEL_SOURCE — the probe must attach the same weights the submission does,
 # or its mount-path answer does not transfer.
-MODEL_SOURCE = "google/gemma-4/transformers/gemma-4-31b-it"
+MODEL_SOURCE = "google/gemma-4/transformers/gemma-4-31b-it/1"
 
 # Filesystem path the attached Gemma weights mount at, under /kaggle/input.
 #

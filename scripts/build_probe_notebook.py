@@ -51,13 +51,26 @@ KERNEL_SLUG = "zerx-kaggle-env-probe"
 # questions about a card we will never run on.
 ACCELERATOR_NAME = "nvidiaRtx6000"
 
-# Kaggle Models handle for the target weights. docs/HANDOFF.md records the
-# Kaggle Models UI displaying this as "google/gemma-4/Transformers/gemma-4-31b-it";
-# Kaggle's API handles are lowercase in the framework segment. If a push
-# fails with "model not found", correct this one line — that failure costs
-# nothing (it is rejected before any GPU is allocated) and the probe's
-# /kaggle/input listing is what confirms the real mount path afterwards.
-MODEL_SOURCE = "google/gemma-4/transformers/gemma-4-31b-it"
+# Kaggle Models handle for the target weights, resolved live against the
+# Kaggle API on 2026-08-06 rather than transcribed from the UI:
+#
+#   kaggle models instances get google/gemma-4/transformers/gemma-4-31b-it
+#   -> instanceSlug='gemma-4-31b-it', framework='transformers',
+#      versionId=619353's versionNumber=1
+#
+# Three things the UI label does not tell you, each of which broke a push or
+# a load before it was pinned down: the framework segment is lowercase in the
+# API ("transformers", not the UI's "Transformers"); a `model_sources` entry
+# is rejected outright without a trailing version number ("Model instance
+# version must be specified in the form of
+# '{owner}/{model-slug}/{framework}/{instance-slug}/{version-number}'"); and
+# none of this is a Hugging Face repo id, which is separately
+# "google/gemma-4-31B-it" with a capital B (docs/HANDOFF.md, Day 2 item 2).
+#
+# Pinning the version is deliberate, not incidental — AGENTS.md requires the
+# exact model revision to be recorded for every run, and an unpinned handle
+# would silently change what we evaluated.
+MODEL_SOURCE = "google/gemma-4/transformers/gemma-4-31b-it/1"
 
 COMPETITION_SLUG = "arc-prize-2026-arc-agi-3"
 
