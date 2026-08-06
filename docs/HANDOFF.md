@@ -1969,3 +1969,110 @@ record** — experiment records across that boundary are not hash-comparable.
   (`exp-150-duck-tools` Variant A scope). `duck_objects_on` now at least
   labels those transitions `HUD_ONLY` in the evidence block, which is the
   information needed to act on it, but nothing yet acts on it.
+
+---
+
+## Integration — everything onto `master`, 2026-08-06
+
+Three independent lines merged, with every fix from each surviving:
+
+| Source | Contribution |
+|---|---|
+| `origin/master` @ `fb2b3eb` | candidate section gated on ACTION6 being legal |
+| `feat/kaggle-p0-model-attach` | measured Kaggle runtime, model attach, probe notebook |
+| `newest-update` | action cap, wall guard, fallback rotation, evidence loop, opening probe, the four dead ablation flags, concurrency submit lock, P3 tooling/config/scanner |
+
+**Test counts at each step:** `origin/master` alone 379 → after
+`feat/kaggle-p0-model-attach` 400 → after `newest-update` **458 passed, 0
+failed**. A bare `pytest` from the repo root now works (the `pytest.ini`
+from `newest-update`), so that is the command.
+
+### Conflicts, and how they were resolved
+
+Only two files conflicted: `scripts/build_notebook.py` and
+`notebooks/kernel-metadata.json`. Both were resolved **toward the measured
+side**, taken wholesale from `feat/kaggle-p0-model-attach` rather than by
+splitting the difference — that branch probed the live Kaggle runtime and
+disproved three premises `newest-update`'s version was built on:
+
+- the RTX card has **~96 GB, not 48 GB**, so bf16 fits and no quantization
+  is needed (this also undercuts the 2026-08-06 Colab fp8 parity decision's
+  stated reason — left for the human owner to re-decide, not silently
+  reversed);
+- **vLLM is absent and unnecessary** — transformers can load bf16 in place
+  from the read-only `/kaggle/input` mount, and `/kaggle/working` has only
+  20.9 GB free so the weights cannot be copied out anyway;
+- the accelerator **was never actually being requested**: Kaggle's push API
+  ignores the notebook's accelerator metadata and reads only
+  `kaggle kernels push --accelerator`, and the starter's own string
+  `nvidiaRtx6000` is silently ignored in favour of the default. The value
+  that works is `NvidiaRtxPro6000`.
+
+A speculative implementation must not outrank a measured one. The vLLM
+wheel-dataset machinery from `newest-update` is gone with it, since nothing
+needs a wheel dataset now.
+
+`zerx/policy.py` auto-merged; the union was **verified rather than
+assumed**. `build_prompt` now does all three things at once: gates the
+candidate section on ACTION6 being legal (`fb2b3eb`), renders the
+recent-transition evidence block, and the opening probe runs ahead of both
+the heuristic and the model in `decide()`.
+
+One test was **rewritten, not deleted**:
+`test_notebook_serves_the_model_and_refuses_to_continue_without_it`
+asserted a vLLM server and `--quantization fp8`, both artifacts of the
+stale 48 GB figure. It now pins the invariant that actually matters — the
+notebook locates the weights and hard-fails rather than falling through to
+heuristics-only play — without pinning *how* the model is served. Pinning
+the mechanism would have re-broken the notebook to satisfy a stale
+assumption.
+
+### Post-merge verification
+
+Beyond the suite, a 29-point check confirmed every individually-fixed item
+is still fixed in the merged tree: the action cap comes from `Config`; the
+wall guard exists; the deterministic fallback rotates; `parse_action(None)`
+returns `None`; the evidence block and the real memory summarizer are
+wired; the opening probe is on and reachable; `structured_memory`,
+`arbiter_on` and `duck_objects_on` all reach real behaviour; the submit
+lock exists; the candidate section appears only when ACTION6 is legal and
+disappears when it is not; all three cerebras lockout conditions reject; a
+malformed `ZERX_*` value names its variable; the secret scanner catches a
+bare key literal; `pytest.ini` exists; `play_local`'s summary line is
+ASCII; the accelerator is `rtx6000` and the push flag is the measured
+`NvidiaRtxPro6000`; `model_sources` is non-empty; the kernel id is a real
+username; the probe notebook survived.
+
+All three notebook builders run clean (`build_notebook`,
+`build_probe_notebook`, `build_colab_notebook`).
+
+Live 3-game run against the real engine (`ls20,vc33,su15`, 40 steps,
+`backend=fake`, trace exported) — no exceptions, and the probe behaves
+exactly as designed:
+
+| game | decision sources | distinct actions |
+|---|---|---|
+| ls20 | probe 4, fallback_deterministic 37 | 4 |
+| vc33 | probe 1, fallback_heuristic 40 | 27 |
+| su15 | probe 1, fallback_heuristic 39, reset 1 | 2 |
+
+`ls20` gets 4 probes because it has 4 legal non-RESET actions and never
+ACTION6; `vc33`/`su15` get 1 because ACTION6 is the only thing left to
+probe. Fallback still dominates locally because `backend=fake` — that is
+expected here and is not a measurement of model behaviour.
+
+### The one thing standing between this and a scored run
+
+`KAGGLE_MODEL_DIR` is `None`. `scripts/build_notebook.py` warns at build
+time and the generated notebook refuses to play rather than degrading, by
+design. Run `notebooks/probe/probe.ipynb`, read the real mount path out of
+its `/kaggle/input` listing, set the constant, rebuild, and push with:
+
+```
+kaggle kernels push -p notebooks/ --accelerator NvidiaRtxPro6000
+```
+
+Also still true: **no Gemma-backed run of the merged agent exists.** Time
+one model call on the target card and set `ZERX_MAX_ACTIONS` from that
+measurement before committing to the 400 default — ~25 games × 400 actions
+is ~10,000 calls against a ~9 h limit.
