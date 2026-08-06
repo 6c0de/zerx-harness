@@ -410,3 +410,73 @@ def test_decide_raw_response_is_none_when_no_model_call_happens():
         actions_taken=0,
     )
     assert decision.raw_response is None
+
+
+class _RaisingBackend:
+    """Test double: every generate() call raises, simulating a real
+    backend failure (auth, network, ...) rather than a bad-but-present
+    response. Distinct from FakeModelBackend(responses=[]), which raises
+    RuntimeError("no scripted responses left") -- this lets tests control
+    the exact exception type/message surfaced via Decision.model_error.
+    """
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def generate(self, prompt: str) -> str:
+        raise self._exc
+
+
+def test_decide_populates_model_error_when_backend_raises():
+    decision, _ = decide(
+        frame=_blank_frame(),
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(),
+        backend=_RaisingBackend(RuntimeError("boom")),
+        actions_taken=0,
+    )
+    assert decision.raw_response is None
+    assert decision.model_error == "RuntimeError: boom"
+
+
+def test_decide_model_error_populated_on_fallback_heuristic_path_too():
+    frame = _frame([[0, 0], [0, 5]])  # one clickable object -> fallback_heuristic
+    decision, _ = decide(
+        frame=frame,
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(),
+        backend=_RaisingBackend(ConnectionError("network down")),
+        actions_taken=0,
+    )
+    assert decision.source == "fallback_heuristic"
+    assert decision.model_error == "ConnectionError: network down"
+
+
+def test_decide_model_error_is_none_when_model_call_succeeds():
+    decision, _ = decide(
+        frame=_blank_frame(),
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(),
+        backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
+        actions_taken=0,
+    )
+    assert decision.model_error is None
+
+
+def test_decide_model_error_is_none_when_no_model_call_happens():
+    decision, _ = decide(
+        frame=_blank_frame(is_game_over=True),
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(),
+        backend=FakeModelBackend(responses=[]),
+        actions_taken=0,
+    )
+    assert decision.model_error is None

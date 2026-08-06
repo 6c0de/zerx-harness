@@ -234,6 +234,19 @@ class MyAgent(Agent):
             actions_taken=self._actions_taken,
         )
 
+        if decision.model_error is not None:
+            # Previously silent: decide() swallows a model-backend failure
+            # with no logging anywhere, so a real run could fall back every
+            # single step with zero visibility into why (confirmed against
+            # real cerebras_dev traces where 100% of calls raised and
+            # nothing surfaced it). Logged here, not inside decide(), so
+            # decide() stays a pure, side-effect-free function.
+            logger.warning(
+                "model call failed this step: %s (source=%s)",
+                decision.model_error,
+                decision.source,
+            )
+
         # --- baseline-115-exact-state-memory (feat/baseline-115-exact-state-memory) ---
         # Guarded by `not frame.is_game_over`: decide()'s terminal
         # short-circuit (zerx/policy.py) always returns RESET on a

@@ -46,6 +46,31 @@ def test_describe_reasoning_falls_back_to_source_name_for_unknown_source():
     assert describe_reasoning(decision) == "some_new_source"
 
 
+def test_describe_reasoning_surfaces_model_error_when_present():
+    decision = Decision(
+        action=Action(name=ActionName.ACTION1),
+        source="fallback_deterministic",
+        model_error="RuntimeError: boom",
+    )
+    assert describe_reasoning(decision) == (
+        "model call failed (RuntimeError: boom); no model or heuristic "
+        "action available; used the static fallback preference order"
+    )
+
+
+def test_describe_reasoning_prefers_raw_response_over_model_error():
+    # A model call can succeed (raw_response set) on a later attempt within
+    # the same step's fallback chain in principle -- raw_response, when
+    # present, is always the more informative signal.
+    decision = Decision(
+        action=Action(name=ActionName.ACTION1),
+        source="model",
+        raw_response="actual model text",
+        model_error="RuntimeError: boom",
+    )
+    assert describe_reasoning(decision) == "actual model text"
+
+
 def test_build_trace_step_captures_frame_and_decision():
     decision = Decision(
         action=Action(name=ActionName.ACTION6, x=3, y=4),

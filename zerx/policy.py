@@ -86,6 +86,11 @@ class Decision:
     raw_response: Optional[str] = None  # the model's raw text, when a
     # model call happened this step -- populated even on a failed parse,
     # so tooling (zerx/trace.py) can show what the model actually said.
+    model_error: Optional[str] = None  # str(exc) when a model call was
+    # attempted and raised (auth/network/backend failure, distinct from a
+    # successful-but-unparseable response, which populates raw_response
+    # instead) -- otherwise every model-call failure was silently
+    # discarded with zero visibility into why a step fell back.
 
 
 _FALLBACK_PREFERENCE = (
@@ -215,6 +220,7 @@ def decide(
         )
 
     raw_response: Optional[str] = None
+    model_error: Optional[str] = None
     if config.candidate_count > 1:
         try:
             from zerx.candidates import generate_candidates, select_candidate
@@ -225,14 +231,16 @@ def decide(
             )
             best = select_candidate(model_candidates, config)
             parsed = best.parsed if best is not None else None
-        except Exception:
+        except Exception as exc:
             parsed = None
+            model_error = f"{type(exc).__name__}: {exc}"
     else:
         try:
             raw_response = backend.generate(build_prompt(perception, new_memory, candidates))
             parsed = parse_action(raw_response, legal_actions)
-        except Exception:
+        except Exception as exc:
             parsed = None
+            model_error = f"{type(exc).__name__}: {exc}"
 
     if parsed is not None:
         return (
@@ -242,6 +250,7 @@ def decide(
                 repaired=parsed.repaired,
                 budget=budget,
                 raw_response=raw_response,
+                model_error=model_error,
             ),
             new_memory,
         )
@@ -255,6 +264,7 @@ def decide(
                 budget=budget,
                 target_object_label=top.object_label,
                 raw_response=raw_response,
+                model_error=model_error,
             ),
             new_memory,
         )
@@ -267,6 +277,7 @@ def decide(
                 source="fallback_deterministic",
                 budget=budget,
                 raw_response=raw_response,
+                model_error=model_error,
             ),
             new_memory,
         )
@@ -279,6 +290,7 @@ def decide(
                 source="fallback_random",
                 budget=budget,
                 raw_response=raw_response,
+                model_error=model_error,
             ),
             new_memory,
         )
@@ -289,6 +301,7 @@ def decide(
                 source="fallback_random",
                 budget=budget,
                 raw_response=raw_response,
+                model_error=model_error,
             ),
             new_memory,
         )

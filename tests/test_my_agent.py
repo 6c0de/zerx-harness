@@ -14,6 +14,7 @@ like `agent/my_agent.py` itself already does.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -267,3 +268,31 @@ def test_trace_recorder_exception_does_not_desync_agent_state():
     assert isinstance(second, GameAction)
     assert second.reasoning != {"source": "exception_fallback"}
     assert agent._actions_taken == 2
+
+
+def test_choose_action_logs_a_warning_when_the_model_backend_raises(caplog):
+    """A model backend failure (auth, network, ...) was previously
+    completely silent -- decide() swallowed the exception with no logging
+    anywhere, so a real run could fall back on every single step with zero
+    visibility into why (confirmed against real cerebras_dev traces).
+    Decision.model_error now carries the exception text; this asserts
+    agent/my_agent.py actually surfaces it to the console, not just the
+    trace file, so a human watching a live run sees it in real time.
+    """
+    agent = _make_agent()
+
+    class _RaisingBackend:
+        def generate(self, prompt):
+            raise RuntimeError("boom")
+
+    agent._backend = _RaisingBackend()
+
+    frame = FrameData(
+        frame=[[[0, 0], [0, 0]]],
+        state=GameState.NOT_FINISHED,
+        available_actions=[1, 2, 5],
+    )
+    with caplog.at_level(logging.WARNING):
+        agent.choose_action([frame], frame)
+
+    assert any("RuntimeError: boom" in record.getMessage() for record in caplog.records)

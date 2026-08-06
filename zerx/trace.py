@@ -27,11 +27,17 @@ _SOURCE_DESCRIPTIONS = {
 def describe_reasoning(decision: Decision) -> str:
     """Human-readable reasoning text for the visualizer's panel: the raw
     model response when one exists, else a synthesized description of why
-    the fallback/heuristic path fired.
+    the fallback/heuristic path fired -- prefixed with the model backend's
+    actual error message when a model call was attempted and raised, since
+    otherwise a fallback step gives no visibility into *why* the model
+    call failed (auth, network, ...), only that it did.
     """
     if decision.raw_response:
         return decision.raw_response
-    return _SOURCE_DESCRIPTIONS.get(decision.source, decision.source)
+    fallback_text = _SOURCE_DESCRIPTIONS.get(decision.source, decision.source)
+    if decision.model_error:
+        return f"model call failed ({decision.model_error}); {fallback_text}"
+    return fallback_text
 
 
 @dataclass(frozen=True)
