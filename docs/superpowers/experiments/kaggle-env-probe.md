@@ -219,6 +219,53 @@ answer is better than the project assumed.
   against the ~9 h limit, warning above 7 h. The per-game cap has never been
   calibrated against a real Gemma call.
 
+### The model really loads and really answers (model-smoke, 2026-08-06)
+
+`notebooks/model-smoke` (kernel `enzeceb/zerx-model-load-smoke`) runs the
+submission's own install cell and readiness gate verbatim, on the same card,
+with no submission slot spent. Final run, `gate returncode: 0`:
+
+| | |
+|---|---|
+| GPU | NVIDIA RTX PRO 6000 Blackwell Server Edition, 97887 MiB |
+| Weights loaded + first generation | **737.8 s** (~12.3 min, one-time) |
+| Steady-state per-call latency | **1.14 s** |
+| Projection | 25 games x 400 actions = **3.2 h** of model time (limit ~9 h) |
+
+**`max_actions = 400` needs no change** on these numbers.
+
+**Read 3.2 h as a floor, not a ceiling.** The 1.14 s was measured on a
+trivial prompt (`Reply with exactly this JSON and nothing else`). A real
+prompt carries a 64x64 ASCII grid, the ranked click candidates and the
+memory summary — far more input tokens, so the true per-call cost is higher.
+At 2 s/call the projection is ~5.6 h.
+
+That is still safe, because of how the existing per-game wall guard behaves
+under concurrency. `Swarm` starts every game's thread together, so all their
+`timer`s run over the same span, and `TransformersModelBackend` serialises
+calls across them. The run therefore self-limits at
+`max_wall_seconds`=7200 s (~2 h wall) regardless of latency; a slower model
+costs each game *depth* (roughly 250 actions instead of 400) rather than
+costing the run its scorecard.
+
+Five separate blockers were found and fixed on the way to this result, each
+of which alone would have scored ~zero, and none of which any local test
+caught:
+
+1. No model attached to the submission at all (ARC-HANDOFF-001).
+2. `gemma_kaggle` resolved to an HTTP client for a vLLM server that cannot
+   exist here — and the readiness gate passed it, because it only rejected
+   `FakeModelBackend`.
+3. The accelerator was never actually requested (see section 1 above).
+4. An empty `%%writefile` cell aborted the kernel at cell 3, before the
+   agent, the model or the gate were reached. `zerx/__init__.py` is
+   legitimately 0 bytes.
+5. `transformers` 5.0.0 does not know `model_type: gemma4`; support landed
+   in 5.5.0, and with no bundled modeling code, null `auto_map` and no
+   internet there was no way around the version. Fixed with a 14 MB offline
+   wheel dataset — and then by pinning it, because an unpinned install is
+   "already satisfied" by 5.0.0 and silently does nothing.
+
 ### Still unverified
 
 Every run here reported `is_competition_rerun: false`. Whether the scored
