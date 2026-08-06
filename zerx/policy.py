@@ -121,11 +121,19 @@ def build_prompt(
     perception: PerceptionResult,
     memory: MemoryState,
     candidates: Sequence[ClickCandidate] = (),
+    legal_actions: FrozenSet[ActionName] = frozenset(),
+    budget: Optional[BudgetSignal] = None,
 ) -> str:
     """STRATEGY.md §8: show the model its top ranked click candidates, not
     just the raw object table, so it can select ACTION6 by label instead of
     guessing coordinates — directly reduces the coordinate-hallucination
     failure mode.
+
+    Also surfaces `legal_actions` (AGENTS.md's required control flow step 2:
+    "do not assume all games support the same actions") and `budget` as a
+    strategy signal (AGENTS.md step 7: never a forced/invented move, just a
+    hint). Deliberately does not describe what ACTION1-ACTION5 *do* —
+    AGENTS.md forbids hard-coding their semantics since they vary by game.
     """
     object_lines = (
         "\n".join(
@@ -141,15 +149,25 @@ def build_prompt(
         )
         or "(no click candidates)"
     )
+    legal_action_names = ", ".join(sorted(a.value for a in legal_actions)) or "(none)"
+    budget_line = (
+        f"Actions taken so far: {budget.actions_taken} (soft cap {budget.soft_cap}). "
+        "This is a strategy signal only, not a required move."
+        if budget is not None
+        else "(no budget signal)"
+    )
     return (
         "You are playing a grid-based puzzle game.\n"
         f"Grid:\n{perception.ascii_grid}\n\n"
         f"Objects:\n{object_lines}\n\n"
         "Ranked click candidates (if you choose ACTION6, prefer one of "
         f"these exact coordinates over guessing):\n{candidate_lines}\n\n"
+        f"Legal actions this turn: {legal_action_names}\n\n"
+        f"Action budget: {budget_line}\n\n"
         f"What you've learned so far: {memory.summary or '(nothing yet)'}\n\n"
         'Respond with exactly one JSON object: {"action": "<ACTION_NAME>", '
-        '"data": {"x": <int>, "y": <int>}} (data only required for ACTION6).'
+        '"data": {"x": <int>, "y": <int>}} (data only required for ACTION6), '
+        "using one of the legal actions listed above."
     )
 
 
@@ -215,7 +233,7 @@ def decide(
         try:
             from zerx.candidates import generate_candidates, select_candidate
 
-            prompt = build_prompt(perception, new_memory, candidates)
+            prompt = build_prompt(perception, new_memory, candidates, legal_actions, budget)
             model_candidates = generate_candidates(
                 backend, prompt, legal_actions, config.candidate_count
             )
@@ -225,7 +243,9 @@ def decide(
             parsed = None
     else:
         try:
-            raw = backend.generate(build_prompt(perception, new_memory, candidates))
+            raw = backend.generate(
+                build_prompt(perception, new_memory, candidates, legal_actions, budget)
+            )
             parsed = parse_action(raw, legal_actions)
         except Exception:
             parsed = None
