@@ -83,6 +83,9 @@ class Decision:
     repaired: bool = False
     budget: Optional[BudgetSignal] = None
     target_object_label: Optional[str] = None
+    raw_response: Optional[str] = None  # the model's raw text, when a
+    # model call happened this step -- populated even on a failed parse,
+    # so tooling (zerx/trace.py) can show what the model actually said.
 
 
 _FALLBACK_PREFERENCE = (
@@ -211,6 +214,7 @@ def decide(
             new_memory,
         )
 
+    raw_response: Optional[str] = None
     if config.candidate_count > 1:
         try:
             from zerx.candidates import generate_candidates, select_candidate
@@ -225,14 +229,20 @@ def decide(
             parsed = None
     else:
         try:
-            raw = backend.generate(build_prompt(perception, new_memory, candidates))
-            parsed = parse_action(raw, legal_actions)
+            raw_response = backend.generate(build_prompt(perception, new_memory, candidates))
+            parsed = parse_action(raw_response, legal_actions)
         except Exception:
             parsed = None
 
     if parsed is not None:
         return (
-            Decision(action=parsed.action, source="model", repaired=parsed.repaired, budget=budget),
+            Decision(
+                action=parsed.action,
+                source="model",
+                repaired=parsed.repaired,
+                budget=budget,
+                raw_response=raw_response,
+            ),
             new_memory,
         )
 
@@ -244,6 +254,7 @@ def decide(
                 source="fallback_heuristic",
                 budget=budget,
                 target_object_label=top.object_label,
+                raw_response=raw_response,
             ),
             new_memory,
         )
@@ -251,18 +262,33 @@ def decide(
     deterministic = _deterministic_fallback(legal_actions)
     if deterministic is not None:
         return (
-            Decision(action=deterministic, source="fallback_deterministic", budget=budget),
+            Decision(
+                action=deterministic,
+                source="fallback_deterministic",
+                budget=budget,
+                raw_response=raw_response,
+            ),
             new_memory,
         )
 
     try:
         random_action = _random_fallback(legal_actions)
         return (
-            Decision(action=random_action, source="fallback_random", budget=budget),
+            Decision(
+                action=random_action,
+                source="fallback_random",
+                budget=budget,
+                raw_response=raw_response,
+            ),
             new_memory,
         )
     except IndexError:
         return (
-            Decision(action=Action(name=ActionName.RESET), source="fallback_random", budget=budget),
+            Decision(
+                action=Action(name=ActionName.RESET),
+                source="fallback_random",
+                budget=budget,
+                raw_response=raw_response,
+            ),
             new_memory,
         )

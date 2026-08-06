@@ -369,3 +369,44 @@ def test_decide_default_candidate_count_still_calls_backend_exactly_once():
         actions_taken=0,
     )
     assert backend.call_count == 1
+
+
+def test_decide_populates_raw_response_on_successful_model_action():
+    decision, _ = decide(
+        frame=_blank_frame(),
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(),
+        backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
+        actions_taken=0,
+    )
+    assert decision.raw_response == '{"action": "ACTION1"}'
+
+
+def test_decide_populates_raw_response_even_when_parse_fails():
+    frame = _frame([[0, 0], [0, 5]])  # one clickable object -> fallback_heuristic
+    decision, _ = decide(
+        frame=frame,
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(),
+        backend=FakeModelBackend(responses=['{"action": "ACTION0"}']),  # invalid name
+        actions_taken=0,
+    )
+    assert decision.source == "fallback_heuristic"
+    assert decision.raw_response == '{"action": "ACTION0"}'
+
+
+def test_decide_raw_response_is_none_when_no_model_call_happens():
+    decision, _ = decide(
+        frame=_blank_frame(is_game_over=True),
+        history=(),
+        memory=MemoryState(),
+        dead_signatures=DeadSignatureTracker(),
+        config=Config(),
+        backend=FakeModelBackend(responses=[]),
+        actions_taken=0,
+    )
+    assert decision.raw_response is None
