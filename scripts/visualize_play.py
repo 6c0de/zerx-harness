@@ -5,6 +5,7 @@ docs/superpowers/specs/2026-08-06-baseline-120-followups-design.md.
 
 Usage:
     scripts/visualize_play.py --live --game ls20 [--max-steps 80] [--save traces/ls20.jsonl] [--history-cap 500]
+    scripts/visualize_play.py --live --game ls20 --save traces/  (auto-names traces/ls20-<timestamp>.jsonl)
     scripts/visualize_play.py --replay traces/ls20-20260806T000000.jsonl
 """
 from __future__ import annotations
@@ -51,27 +52,23 @@ def _clamp_index(index: int, length: int) -> int:
     return max(0, min(index, length - 1))
 
 
-def _wrap_reasoning(text: str, chars_per_line: int, max_lines: int) -> List[str]:
+def _clamp_scroll(scroll: int, total_lines: int, visible_lines: int) -> int:
+    """Clamp a reasoning-panel scroll offset so the visible window never
+    runs past the end of the wrapped text (or before its start)."""
+    max_scroll = max(0, total_lines - visible_lines)
+    return max(0, min(scroll, max_scroll))
+
+
+def _wrap_reasoning(text: str, chars_per_line: int) -> List[str]:
     """Character-wrap `text` (the reasoning panel's raw model response,
-    which has no guaranteed word boundaries) at `chars_per_line`, capped
-    at `max_lines` rendered lines. `describe_reasoning` (zerx/trace.py)
-    can return arbitrary-length text, and a fixed-size window has a fixed
-    number of line slots -- without this cap, overflow lines are drawn
-    past the window edge/bottom and silently lost. When wrapping would
-    exceed `max_lines`, the last line is replaced with a
-    "... (N more lines)" indicator so the truncation is visible instead
-    of silent.
+    which has no guaranteed word boundaries) at `chars_per_line`. Purely a
+    wrap -- the caller (`_render`) is responsible for windowing a scroll
+    position over the result; this function never truncates.
     """
     chars_per_line = max(1, chars_per_line)
-    if max_lines <= 0 or not text:
+    if not text:
         return []
-    all_lines = [text[i : i + chars_per_line] for i in range(0, len(text), chars_per_line)]
-    if len(all_lines) <= max_lines:
-        return all_lines
-    shown = all_lines[: max_lines - 1] if max_lines > 1 else []
-    remaining = len(all_lines) - len(shown)
-    shown.append(f"... ({remaining} more lines)")
-    return shown
+    return [text[i : i + chars_per_line] for i in range(0, len(text), chars_per_line)]
 
 
 def _load_trace(path: str) -> Tuple[TraceMeta, List[TraceStep]]:
@@ -125,6 +122,8 @@ class LivePygameRecorder:
         self._paused = False
         self._replay_mode = False  # set True by _run_replay; disables
         # SPACE's pause-toggle since replay has no running loop to pause
+        self._reasoning_scroll = 0
+        self._current_step: Optional[TraceStep] = None
 
     def record(self, step: TraceStep) -> None:
         self._history.append(step)
@@ -157,12 +156,21 @@ class LivePygameRecorder:
                 base = self._cursor if self._cursor >= 0 else len(self._history) - 1
                 self._cursor = _clamp_index(base + 1, len(self._history))
                 self._render(self._history[self._cursor])
+            elif self._paused and event.key == pygame.K_UP:
+                self._reasoning_scroll = max(0, self._reasoning_scroll - 1)
+                self._render(self._current_step, reset_scroll=False)
+            elif self._paused and event.key == pygame.K_DOWN:
+                self._reasoning_scroll += 1  # _render clamps via _clamp_scroll
+                self._render(self._current_step, reset_scroll=False)
         self._pygame.time.wait(16)  # ~60fps ceiling; avoids a CPU-pinning
         # busy-spin in both this pause loop and _run_replay's event loop
         return self._paused
 
-    def _render(self, step: TraceStep) -> None:
+    def _render(self, step: TraceStep, *, reset_scroll: bool = True) -> None:
         screen, font = self._screen, self._font
+        if reset_scroll:
+            self._reasoning_scroll = 0
+        self._current_step = step
         screen.fill((20, 20, 20))
         for y, row in enumerate(step.grid):
             for x, value in enumerate(row):
@@ -175,7 +183,7 @@ class LivePygameRecorder:
             f"source {step.source}  repaired {step.repaired}",
             f"state {step.game_state}  levels {step.levels_completed}",
             "",
-            "reasoning:",
+            "reasoning: (up/down to scroll)",
         ]
         top_margin, right_margin, line_pitch = 10, 10, 20
         screen_width, screen_height = screen.get_size()
@@ -186,7 +194,20 @@ class LivePygameRecorder:
         chars_per_line = max(1, available_px // char_px)
         max_total_lines = max(1, (screen_height - top_margin) // line_pitch)
         max_reasoning_lines = max(0, max_total_lines - len(header))
-        lines = header + _wrap_reasoning(step.reasoning, chars_per_line, max_reasoning_lines)
+
+        all_lines = _wrap_reasoning(step.reasoning, chars_per_line)
+        self._reasoning_scroll = _clamp_scroll(
+            self._reasoning_scroll, len(all_lines), max_reasoning_lines
+        )
+        visible = all_lines[self._reasoning_scroll : self._reasoning_scroll + max_reasoning_lines]
+        if len(all_lines) > max_reasoning_lines:
+            shown_end = min(self._reasoning_scroll + max_reasoning_lines, len(all_lines))
+            header[-1] = (
+                f"reasoning: (up/down to scroll) "
+                f"[{self._reasoning_scroll + 1}-{shown_end}/{len(all_lines)}]"
+            )
+
+        lines = header + visible
         for i, line in enumerate(lines):
             screen.blit(font.render(line, True, (230, 230, 230)), (panel_x, top_margin + i * line_pitch))
         self._pygame.display.flip()
