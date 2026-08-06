@@ -9,7 +9,7 @@ if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 
 import visualize_play  # noqa: E402
-from visualize_play import _clamp_index, _color_for, _load_trace  # noqa: E402
+from visualize_play import _clamp_index, _color_for, _load_trace, _wrap_reasoning  # noqa: E402
 from zerx.trace import TraceMeta, TraceStep
 
 
@@ -35,6 +35,32 @@ def test_clamp_index_stays_within_bounds():
 
 def test_clamp_index_handles_empty_buffer():
     assert _clamp_index(3, length=0) == 0
+
+
+def test_wrap_reasoning_returns_text_as_is_when_it_fits_on_one_line():
+    assert _wrap_reasoning("hello world", chars_per_line=20, max_lines=5) == ["hello world"]
+
+
+def test_wrap_reasoning_wraps_at_chars_per_line():
+    assert _wrap_reasoning("abcdefghij", chars_per_line=4, max_lines=10) == ["abcd", "efgh", "ij"]
+
+
+def test_wrap_reasoning_truncates_with_a_visible_indicator_past_max_lines():
+    # "x" * 100 wraps into 10 lines of 10 chars each; capped at max_lines=3
+    # leaves room for 2 real lines + 1 indicator line (8 lines omitted).
+    lines = _wrap_reasoning("x" * 100, chars_per_line=10, max_lines=3)
+    assert len(lines) == 3  # capped, never silently overflows the caller's line budget
+    assert lines[0] == "xxxxxxxxxx"
+    assert lines[-1] == "... (8 more lines)"
+
+
+def test_wrap_reasoning_handles_empty_text():
+    assert _wrap_reasoning("", chars_per_line=10, max_lines=5) == []
+
+
+def test_wrap_reasoning_handles_zero_or_negative_max_lines():
+    assert _wrap_reasoning("anything", chars_per_line=10, max_lines=0) == []
+    assert _wrap_reasoning("anything", chars_per_line=10, max_lines=-1) == []
 
 
 def test_load_trace_parses_meta_and_steps(tmp_path):

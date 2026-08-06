@@ -51,6 +51,29 @@ def _clamp_index(index: int, length: int) -> int:
     return max(0, min(index, length - 1))
 
 
+def _wrap_reasoning(text: str, chars_per_line: int, max_lines: int) -> List[str]:
+    """Character-wrap `text` (the reasoning panel's raw model response,
+    which has no guaranteed word boundaries) at `chars_per_line`, capped
+    at `max_lines` rendered lines. `describe_reasoning` (zerx/trace.py)
+    can return arbitrary-length text, and a fixed-size window has a fixed
+    number of line slots -- without this cap, overflow lines are drawn
+    past the window edge/bottom and silently lost. When wrapping would
+    exceed `max_lines`, the last line is replaced with a
+    "... (N more lines)" indicator so the truncation is visible instead
+    of silent.
+    """
+    chars_per_line = max(1, chars_per_line)
+    if max_lines <= 0 or not text:
+        return []
+    all_lines = [text[i : i + chars_per_line] for i in range(0, len(text), chars_per_line)]
+    if len(all_lines) <= max_lines:
+        return all_lines
+    shown = all_lines[: max_lines - 1] if max_lines > 1 else []
+    remaining = len(all_lines) - len(shown)
+    shown.append(f"... ({remaining} more lines)")
+    return shown
+
+
 def _load_trace(path: str) -> Tuple[TraceMeta, List[TraceStep]]:
     steps: List[TraceStep] = []
     meta: Optional[TraceMeta] = None
@@ -88,7 +111,14 @@ class LivePygameRecorder:
         self._pygame = pygame
         pygame.init()
         pygame.display.set_caption("zerx visualizer -- live")
-        self._screen = pygame.display.set_mode((900, 700))
+        # 900px was too narrow for this project's real 64x64 grids: panel_x
+        # lands at 64*_CELL_PX+20=660px, leaving only 240px (~26 chars at
+        # this font) for reasoning text that was wrapped at a hardcoded 48
+        # chars/line -- the remainder was drawn off-window and lost. 1280px
+        # gives a 620px+ gutter; _render also now derives the actual wrap
+        # width from real font metrics instead of a fixed guess, so this
+        # stays correct if the grid or window size ever changes.
+        self._screen = pygame.display.set_mode((1280, 700))
         self._font = pygame.font.SysFont("consolas", 16)
         self._history: "deque[TraceStep]" = deque(maxlen=history_cap)
         self._cursor = -1  # -1 == following live
@@ -139,16 +169,26 @@ class LivePygameRecorder:
                 rect = (x * _CELL_PX, y * _CELL_PX, _CELL_PX, _CELL_PX)
                 self._pygame.draw.rect(screen, _color_for(value), rect)
         panel_x = len(step.grid[0]) * _CELL_PX + 20 if step.grid else 20
-        lines = [
+        header = [
             f"step {step.step_index}  game {step.game_id}",
             f"action {step.action_name} ({step.action_x}, {step.action_y})",
             f"source {step.source}  repaired {step.repaired}",
             f"state {step.game_state}  levels {step.levels_completed}",
             "",
             "reasoning:",
-        ] + [step.reasoning[i : i + 48] for i in range(0, len(step.reasoning), 48)]
+        ]
+        top_margin, right_margin, line_pitch = 10, 10, 20
+        screen_width, screen_height = screen.get_size()
+        # Real font metrics, not another hardcoded guess -- this is a
+        # monospace font (consolas) so every glyph is the same width.
+        char_px = max(font.size("X")[0], 1)
+        available_px = max(screen_width - panel_x - right_margin, 0)
+        chars_per_line = max(1, available_px // char_px)
+        max_total_lines = max(1, (screen_height - top_margin) // line_pitch)
+        max_reasoning_lines = max(0, max_total_lines - len(header))
+        lines = header + _wrap_reasoning(step.reasoning, chars_per_line, max_reasoning_lines)
         for i, line in enumerate(lines):
-            screen.blit(font.render(line, True, (230, 230, 230)), (panel_x, 10 + i * 20))
+            screen.blit(font.render(line, True, (230, 230, 230)), (panel_x, top_margin + i * line_pitch))
         self._pygame.display.flip()
 
 
@@ -191,6 +231,16 @@ def _run_live(args: argparse.Namespace) -> None:
         agent.trace_recorder = live_recorder
 
     agent.main()
+
+    # Without this, the window disappears the instant the run ends (process
+    # exit), giving no chance to inspect the final frame/decision unless
+    # SPACE happened to be pressed before the last step landed. Force-pause
+    # and keep pumping events -- reuses the existing pause/history-nav/QUIT
+    # path, so LEFT/RIGHT history navigation and closing the window both
+    # keep working exactly as they do mid-run.
+    live_recorder._paused = True
+    while live_recorder._pump_events():
+        pass
 
 
 def _run_replay(args: argparse.Namespace) -> None:
