@@ -1,5 +1,5 @@
 {
-  "id": "enzeceb/zerx-model-smoke",
+  "id": "enzeceb/zerx-model-load-smoke",
   "title": "zerx — model load smoke",
   "code_file": "model-smoke.ipynb",
   "language": "python",
@@ -9,9 +9,13 @@
   "enable_tpu": false,
   "enable_internet": false,
   "keywords": [],
-  "dataset_sources": [],
+  "dataset_sources": [
+    "enzeceb/zerx-transformers-wheels"
+  ],
   "kernel_sources": [],
-  "competition_sources": [],
+  "competition_sources": [
+    "arc-prize-2026-arc-agi-3"
+  ],
   "model_sources": [
     "google/gemma-4/transformers/gemma-4-31b-it/1"
   ]

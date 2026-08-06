@@ -105,6 +105,29 @@ ZERX_GEMMA_BASE_URL = "http://localhost:8000/v1/chat/completions"
 # or its mount-path answer does not transfer.
 MODEL_SOURCE = "google/gemma-4/transformers/gemma-4-31b-it/1"
 
+# Offline wheels for a transformers new enough to know Gemma 4.
+#
+# The Kaggle image ships transformers 5.0.0. The checkpoint declares
+# `model_type: gemma4` / `Gemma4ForConditionalGeneration` and was saved by
+# 5.5.0.dev0, and loading it on 5.0.0 fails outright:
+#
+#   ValueError: The checkpoint you are trying to load has model type `gemma4`
+#   but Transformers does not recognize this architecture.
+#
+# Gemma 4 support landed in transformers 5.5.0. There is no way around the
+# version: the model directory carries no modeling code and `auto_map` is
+# null, so `trust_remote_code=True` has nothing to load, and internet is
+# disabled at evaluation time. Measured on real Kaggle hardware by
+# notebooks/model-smoke — see docs/superpowers/experiments/kaggle-env-probe.md.
+#
+# 5.5.0 exactly, not the newest release: it is the lowest version that
+# supports Gemma 4, and its requirements are all satisfied by what the image
+# already has (huggingface-hub 1.11.0 against <2.0,>=1.5.0; tokenizers 0.22.2
+# against <=0.23.0,>=0.22.0; safetensors 0.7.0; numpy 2.0.2). A newer
+# transformers risks demanding a newer tokenizers or hub, which would mean
+# replacing compiled packages that torch 2.10 is built against.
+WHEELS_DATASET = "enzeceb/zerx-transformers-wheels"
+
 # Filesystem path the attached Gemma weights mount at, under /kaggle/input.
 #
 # Deliberately None until Phase B. The Kaggle Models UI label
@@ -175,6 +198,79 @@ def code_cell(source: str) -> dict:
 
 def markdown_cell(source: str) -> dict:
     return {"cell_type": "markdown", "metadata": {}, "source": source}
+
+
+TRANSFORMERS_INSTALL_SOURCE = dedent(
+    '''\
+    """Install a transformers new enough to load Gemma 4, entirely offline.
+
+    See WHEELS_DATASET in scripts/build_notebook.py for why this is needed at
+    all. Nothing is fetched from the network -- --no-index guarantees it.
+    """
+    import glob, os, subprocess, sys, zipfile
+
+    # Locate the attached wheels wherever Kaggle mounted them, rather than
+    # hardcoding a path: dataset mount points have bitten this project before.
+    candidates = glob.glob("/kaggle/input/*transformers-wheels*")
+    if not candidates:
+        raise SystemExit(
+            "The transformers wheels dataset is not attached. Add "
+            "'WHEELS_DATASET_LITERAL' to kernel-metadata.json's dataset_sources."
+        )
+    wheel_dir = candidates[0]
+
+    # Kaggle keeps a zip-uploaded directory as a .zip rather than expanding it,
+    # and --find-links needs real .whl files. Handle both presentations.
+    if not glob.glob(os.path.join(wheel_dir, "**", "*.whl"), recursive=True):
+        os.makedirs("/tmp/wheels", exist_ok=True)
+        for archive in glob.glob(os.path.join(wheel_dir, "**", "*.zip"), recursive=True):
+            with zipfile.ZipFile(archive) as handle:
+                handle.extractall("/tmp/wheels")
+        wheel_dir = "/tmp/wheels"
+
+    found = glob.glob(os.path.join(wheel_dir, "**", "*.whl"), recursive=True)
+    print(f"{len(found)} wheels under {wheel_dir}")
+    if not found:
+        raise SystemExit(f"No .whl files found under {wheel_dir}")
+
+    # The version pin is load-bearing. An unpinned `transformers` is
+    # "already satisfied" by the image's 5.0.0, so pip does nothing at all and
+    # the install reports success while changing none of the problem -- which
+    # is exactly what the first attempt did.
+    #
+    # --no-deps on purpose: a plain resolve would pull the newer numpy in the
+    # wheel set and replace the one torch 2.10 was built against. Every
+    # dependency transformers 5.5.0 declares is already satisfied by the image,
+    # confirmed on the same run (regex 2025.11.3, typer 0.24.2, click 8.3.3,
+    # rich 13.9.4, and the rest all present), so transformers is the only
+    # package that needs to change.
+    packages = ["transformers==5.5.0"]
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--no-index", "--no-deps",
+         "--find-links", wheel_dir, *packages],
+        capture_output=True, text=True,
+    )
+    print(result.stdout[-2000:])
+    if result.returncode != 0:
+        print(result.stderr[-3000:])
+        raise SystemExit("offline transformers install failed")
+
+    # Confirm the version that is now importable, and that it recognises the
+    # architecture -- installing the wheel is not the same as fixing the load.
+    check = subprocess.run(
+        [sys.executable, "-c",
+         "import transformers;"
+         "from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES;"
+         "print(transformers.__version__, 'gemma4' in CONFIG_MAPPING_NAMES)"],
+        capture_output=True, text=True,
+    )
+    print("transformers now:", check.stdout.strip() or check.stderr[-1000:])
+    if "True" not in check.stdout:
+        raise SystemExit(
+            "transformers still does not recognise gemma4 after the install"
+        )
+    '''
+).replace("WHEELS_DATASET_LITERAL", WHEELS_DATASET)
 
 
 READINESS_GATE_SOURCE = dedent(
@@ -305,6 +401,8 @@ def build() -> dict:
         "    /kaggle/input/competitions/arc-prize-2026-arc-agi-3/arc_agi_3_wheels \\\n"
         "    arc-agi python-dotenv"
     )
+
+    transformers_install_cell = code_cell(TRANSFORMERS_INSTALL_SOURCE)
 
     # Bundle zerx/*.py (top-level modules only — never zerx/backends/, the
     # Cerebras dev-only module) so `agent/my_agent.py`'s `from zerx.config
@@ -528,6 +626,7 @@ def build() -> dict:
                 "`make submit`."
             ),
             install_cell,
+            transformers_install_cell,
             mkdir_cell,
             *zerx_write_cells,
             write_agent_cell,
@@ -560,6 +659,10 @@ def main() -> None:
         if meta.get("model_sources") != [MODEL_SOURCE]:
             meta["model_sources"] = [MODEL_SOURCE]
             changes.append(f"model_sources=[{MODEL_SOURCE!r}]")
+
+        if meta.get("dataset_sources") != [WHEELS_DATASET]:
+            meta["dataset_sources"] = [WHEELS_DATASET]
+            changes.append(f"dataset_sources=[{WHEELS_DATASET!r}]")
 
         if changes:
             METADATA_PATH.write_text(

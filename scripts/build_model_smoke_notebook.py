@@ -40,7 +40,11 @@ SMOKE_DIR = ROOT / "notebooks" / "model-smoke"
 NOTEBOOK_PATH = SMOKE_DIR / "model-smoke.ipynb"
 METADATA_PATH = SMOKE_DIR / "kernel-metadata.json"
 
-KERNEL_SLUG = "zerx-model-smoke"
+# Must be the slug Kaggle derives from the title below ("zerx — model load
+# smoke"), not an independently chosen name. When the two disagree Kaggle
+# creates the kernel under the title-derived slug and warns rather than
+# failing; the next push then 409s against an id that does not exist.
+KERNEL_SLUG = "zerx-model-load-smoke"
 
 
 def build() -> dict:
@@ -60,6 +64,12 @@ def build() -> dict:
     # rule that `zerx/backends/` is never shipped.
     zerx_bodies = [(p, p.read_text(encoding="utf-8")) for p in build_notebook.zerx_bundle_files()]
 
+    # Same offline transformers install the submission performs, verbatim:
+    # a smoke test of a different install would prove nothing about it.
+    transformers_cell = build_notebook.code_cell(
+        build_notebook.TRANSFORMERS_INSTALL_SOURCE
+    )
+
     mkdir_cell = build_notebook.code_cell(
         "import os\n"
         "os.makedirs('/tmp/zerx', exist_ok=True)"
@@ -72,6 +82,57 @@ def build() -> dict:
     ]
     gate_cell = build_notebook.code_cell(
         "%%writefile /tmp/zerx_readiness_gate.py\n" + build_notebook.READINESS_GATE_SOURCE
+    )
+
+    # Runs BEFORE the gate, and never raises. The gate's job is a verdict; this
+    # cell's job is to leave behind enough detail to act on a failure without
+    # spending another run guessing. The first attempt died on
+    # `ValueError: ... model type 'gemma4' but Transformers does not recognize
+    # this architecture`, and the answer to "can that be worked around" lives
+    # entirely in facts this cell prints: what the checkpoint declares, what
+    # this transformers knows, and whether the checkpoint carries its own
+    # modeling code (which `trust_remote_code=True` could then load).
+    diagnostic_cell = build_notebook.code_cell(
+        dedent(
+            """\
+            import json, os
+
+            MODEL_DIR = "MODEL_DIR_LITERAL"
+
+            print("=== every file in the model directory ===")
+            # The environment probe only ever listed .safetensors/.bin/.gguf/.json,
+            # so a bundled modeling_*.py would have been invisible to it.
+            for root, _dirs, files in os.walk(MODEL_DIR):
+                for name in sorted(files):
+                    size = os.path.getsize(os.path.join(root, name))
+                    print(f"  {os.path.relpath(os.path.join(root, name), MODEL_DIR):50} "
+                          f"{size/1e6:10.1f} MB")
+
+            print()
+            print("=== what the checkpoint declares ===")
+            try:
+                with open(os.path.join(MODEL_DIR, "config.json")) as handle:
+                    cfg = json.load(handle)
+                for key in ("model_type", "architectures", "torch_dtype",
+                            "auto_map", "transformers_version"):
+                    print(f"  {key}: {cfg.get(key)}")
+            except Exception as exc:
+                print("  could not read config.json:", exc)
+
+            print()
+            print("=== what this transformers knows ===")
+            try:
+                import transformers
+                from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
+                print("  transformers:", transformers.__version__)
+                declared = cfg.get("model_type") if "cfg" in dir() else None
+                print(f"  recognises {declared!r}:", declared in CONFIG_MAPPING_NAMES)
+                print("  gemma-family model types it does know:",
+                      sorted(n for n in CONFIG_MAPPING_NAMES if "gemma" in n))
+            except Exception as exc:
+                print("  introspection failed:", exc)
+            """
+        ).replace("MODEL_DIR_LITERAL", build_notebook.KAGGLE_MODEL_DIR or "")
     )
 
     run_cell = build_notebook.code_cell(
@@ -90,8 +151,27 @@ def build() -> dict:
                      'ZERX_BACKEND': 'BACKEND_LITERAL',
                      'ZERX_PLATFORM': 'PLATFORM_LITERAL',
                      'ZERX_MODEL_PATH': 'MODEL_DIR_LITERAL'},
+                capture_output=True, text=True,
             )
+            print(result.stdout)
+            if result.stderr:
+                print("--- gate stderr ---")
+                print(result.stderr[-4000:])
             print("gate exit code:", result.returncode)
+
+            # Persist the verdict to /kaggle/working as well as stdout. The
+            # kernel log endpoint has come back empty on a COMPLETE run, and a
+            # result that only exists in a log we cannot always fetch is a
+            # result we may have to pay for twice -- the probe's probe.json
+            # downloaded reliably when the log did not.
+            import json
+            with open('/kaggle/working/smoke.json', 'w') as handle:
+                json.dump({
+                    "gate_returncode": result.returncode,
+                    "gate_stdout": result.stdout,
+                    "gate_stderr": result.stderr[-8000:],
+                }, handle, indent=2)
+
             if result.returncode != 0:
                 raise SystemExit(
                     "The model did not load or did not answer. This is the "
@@ -119,7 +199,8 @@ def build() -> dict:
         },
         "nbformat_minor": 4,
         "nbformat": 4,
-        "cells": [intro, mkdir_cell, *zerx_cells, gate_cell, run_cell],
+        "cells": [intro, transformers_cell, mkdir_cell, *zerx_cells,
+                  gate_cell, diagnostic_cell, run_cell],
     }
 
 
@@ -138,10 +219,19 @@ def build_metadata() -> dict:
         "enable_tpu": False,
         "enable_internet": False,
         "keywords": [],
-        "dataset_sources": [],
+        "dataset_sources": [build_notebook.WHEELS_DATASET],
         "kernel_sources": [],
-        # No competition source: this loads a model, it does not play a game.
-        "competition_sources": [],
+        # The competition IS attached, even though this kernel plays no game.
+        #
+        # It was left off at first, on the reasoning that a model-load test does
+        # not need game data. That cost the run its GPU: the kernel recorded
+        # machine_shape=NvidiaRtxPro6000 server-side (confirmed via
+        # `kaggle kernels pull -m`) and was still allocated a Tesla P100, while
+        # the probe kernel -- same flag, same account, competition attached --
+        # got the RTX PRO 6000. The starter's own README says "RTX 6000 is
+        # reserved for ARC-AGI-3 notebooks only"; attaching the competition is
+        # evidently what makes a kernel one of those.
+        "competition_sources": ["arc-prize-2026-arc-agi-3"],
         "model_sources": [build_notebook.MODEL_SOURCE],
     }
 

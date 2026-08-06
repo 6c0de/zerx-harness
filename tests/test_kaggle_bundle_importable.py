@@ -318,6 +318,50 @@ def test_probe_and_submission_request_the_same_card():
     assert build_probe_notebook.PUSH_ACCELERATOR == build_notebook.push_accelerator_flag()
 
 
+def _transformers_install_source() -> str:
+    sources = _cell_sources(build_notebook.build())
+    matches = [s for s in sources if "offline transformers install failed" in s]
+    assert len(matches) == 1, "expected exactly one offline transformers install cell"
+    return matches[0]
+
+
+def test_transformers_install_pins_an_exact_version():
+    """The pin is load-bearing, not tidiness. An unpinned `transformers` is
+    already satisfied by the Kaggle image's 5.0.0, so pip does nothing and
+    reports success while the checkpoint remains unloadable — measured on a
+    real run, which is how this was found. Gemma 4 needs >= 5.5.0.
+    """
+    source = _transformers_install_source()
+    assert "transformers==5.5.0" in source
+
+
+def test_transformers_install_is_offline_and_cannot_replace_numpy():
+    """Internet is disabled at evaluation time, so the install must resolve
+    only from the attached wheels. --no-deps additionally keeps pip from
+    pulling the newer numpy in that wheel set over the one torch 2.10 was
+    built against.
+    """
+    source = _transformers_install_source()
+    assert "--no-index" in source
+    assert "--no-deps" in source
+
+
+def test_transformers_install_verifies_the_architecture_is_actually_recognised():
+    """Installing the wheel is not the same as fixing the load. The check that
+    caught the silent no-op above is that `gemma4` appears in transformers'
+    own config mapping afterwards.
+    """
+    source = _transformers_install_source()
+    assert "CONFIG_MAPPING_NAMES" in source
+    assert "gemma4" in source
+    assert "raise SystemExit" in source
+
+
+def test_kernel_metadata_attaches_the_wheels_dataset():
+    metadata = json.loads(build_notebook.METADATA_PATH.read_text(encoding="utf-8"))
+    assert metadata["dataset_sources"] == [build_notebook.WHEELS_DATASET]
+
+
 def test_run_cell_installs_nothing_from_the_network():
     """Internet is disabled at evaluation time; every install must be offline."""
     for source in _cell_sources(build_notebook.build()):
