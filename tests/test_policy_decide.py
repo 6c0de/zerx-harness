@@ -235,6 +235,37 @@ def test_build_prompt_without_candidates_says_so():
     assert "no click candidates" in prompt
 
 
+def test_build_prompt_lists_legal_actions():
+    perception = PerceptionResult(ascii_grid="0", objects=())
+    legal = frozenset({ActionName.ACTION1, ActionName.ACTION6, ActionName.RESET})
+    prompt = build_prompt(perception, MemoryState(), legal_actions=legal)
+    assert "ACTION1" in prompt
+    assert "ACTION6" in prompt
+    assert "RESET" in prompt
+    assert "ACTION2" not in prompt
+
+
+def test_build_prompt_without_legal_actions_says_none():
+    perception = PerceptionResult(ascii_grid="0", objects=())
+    prompt = build_prompt(perception, MemoryState())
+    assert "Legal actions this turn: (none)" in prompt
+
+
+def test_build_prompt_includes_budget_signal():
+    perception = PerceptionResult(ascii_grid="0", objects=())
+    budget = BudgetSignal(actions_taken=5, soft_cap=10, should_favor_execution=False)
+    prompt = build_prompt(perception, MemoryState(), budget=budget)
+    assert "5" in prompt
+    assert "10" in prompt
+    assert "strategy signal only" in prompt
+
+
+def test_build_prompt_without_budget_says_so():
+    perception = PerceptionResult(ascii_grid="0", objects=())
+    prompt = build_prompt(perception, MemoryState())
+    assert "(no budget signal)" in prompt
+
+
 def test_decide_budget_favoring_execution_triggers_heuristic_even_when_heuristic_first_off():
     """Fix 3a (final whole-branch review): the budget signal must be able to
     trigger heuristic use on its own, additively alongside heuristic_first,

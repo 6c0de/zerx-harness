@@ -218,6 +218,18 @@ parallel tracks below (none of them touch Kaggle).
 4. `history` is computed in `agent/my_agent.py` and passed to
    `decide()`/`perceive()`, but `perceive()` ignores it — deliberate
    interface stability for future movement-delta perception.
+   **Updated 2026-08-06 (repo audit, ARC-AUDIT-013):** re-confirmed still
+   true on `master`, `feat/baseline-120-followups`, and
+   `integration/baseline-120-colab-ready` — `perceive()`'s signature still
+   documents `history` as accepted-but-unused. Two consequences worth
+   recording beyond "deliberate": (a) it costs four `_to_game_frame`
+   conversions per action that are then discarded, and (b) it means the
+   agent has **no state-delta perception at all** — it cannot see what its
+   own last action changed, which is the core evidence loop ARC-AGI-3
+   rewards. `zerx/scene.py`'s `compare_frames()`/`classify_transition()`
+   already implement exactly this and are unwired (see ARC-HANDOFF-003).
+   Still correctly classified as planned future work (`exp-150`), not a
+   regression — listed here so the cost is visible, not to reopen it.
 5. `baseline-100`'s per-game outcome wasn't captured (see Colab state
    above) — small, independent follow-up.
 6. **`zerx/policy.py`'s `build_prompt()` never lists the actual legal
@@ -246,6 +258,41 @@ parallel tracks below (none of them touch Kaggle).
    `e402a0d fix(policy): surface legal actions and budget signal in
    build_prompt` — see
    `docs/superpowers/plans/2026-08-06-baseline-120-followups-integration.md`.
+
+   **Updated 2026-08-06 — PARTIALLY RESOLVED on
+   `feat/policy-prompt-legal-budget` (commit `e402a0d`), not yet on
+   `master`.** The code half of the fix candidate is done exactly as
+   described: `build_prompt()` now takes `legal_actions` (and `budget`),
+   renders `Legal actions this turn: ...`, and closes by binding the model
+   to that list; both `decide()` call sites pass them. Verified on that
+   branch against every other branch in the repo — no other branch
+   contains this fix.
+
+   *Evidence so far (key-free mechanism A/B, real local engine, real
+   `ls20` + `vc33` frames, 25 steps/game, 50 decisions/arm).* A simulated
+   model constrained to name only actions it can actually read in the
+   prompt — the precise capability this fix adds — was run against a
+   master-shaped prompt and the fixed prompt:
+
+   | Arm | `source="model"` | fallback |
+   |---|---|---|
+   | master prompt (no legal-actions line) | 0 | **50 (100%)** |
+   | fixed prompt (`legal_actions` rendered) | **50 (100%)** | 0 |
+
+   The master arm reproduces Track 4's recorded symptom exactly (every
+   decision falls through to the fallback chain). This confirms the
+   information channel was closed and is now open. **It does not measure
+   whether real `gemma-4-31b` scores better** — by construction the
+   simulated model always picks a legal name, which a real model may not.
+
+   *Still outstanding — do not close this item until done:* re-run the
+   original 8-game `cerebras_dev` sweep (`ls20, vc33, su15, tn36, ka59,
+   lf52, tr87, sc25`) and compare against `baseline-120`'s flat `0.0`
+   reference. All 8 games are available to the local engine; the only
+   blocker is that `CEREBRAS_API_KEY` was not present in the environment
+   when this was attempted. Note also that `MAX_ACTIONS` silently caps at
+   80 steps/game (open item 7 below), so the re-run must record its actual
+   step count rather than the requested one.
 7. **`scripts/play_local.py`'s `MyAgentCls.MAX_ACTIONS = min(MyAgentCls.MAX_ACTIONS,
    args.max_steps)` can only ever *lower* the step cap**, never raise it
    above `MyAgentCls`'s existing default (80, inherited from the vendored
@@ -665,3 +712,466 @@ session's own tool environment** (no `CEREBRAS_API_KEY`, no Kaggle token)
 — every test that would need one injects a fake instead; see "Cerebras
 development state" above for the one nuance (a live key now exists in the
 human owner's own terminal, never shared with this session).
+
+## Unresolved work from the 2026-08-06 full-repository audit
+
+Source: `docs/audits/2026-08-06-full-repository-audit.md` (20 findings).
+Each finding was then checked against **every** branch in the repo
+(branch-wide resolution check, 2026-08-06). Only findings that **no
+branch solves** appear below.
+
+**Already solved — do NOT re-implement, these are merge candidates:**
+
+| Audit ID | Problem | Solved on |
+|---|---|---|
+| ARC-AUDIT-001 | Kaggle bundle unimportable (`ModuleNotFoundError: zerx.backends`) | `feat/policy-prompt-legal-budget` @ `c964ea0` (already merged into `integration/baseline-120-colab-ready`) |
+| ARC-AUDIT-002 | Notebook writes `/tmp/zerx/*.py` without creating `/tmp/zerx` | same |
+| ARC-AUDIT-004 | `transitions._diff` IndexError / false "no change" on grid-shape change | same |
+| ARC-AUDIT-005 | `levels_completed` discarded (`score=0` hardcoded) | same — note `feat/baseline-120-followups` still has `score=0`; its `levels_completed` reference is trace metadata only, not this fix |
+| ARC-AUDIT-006 | Unbounded prompt object table (~49k tokens on a legal frame) | same |
+| ARC-AUDIT-012 | Suspected cross-game state leak | **Not a defect** — `Swarm.main()` builds a fresh agent per game. Verified, closed, no work needed. |
+
+`feat/baseline-120-followups` independently solved the **observability**
+half of ARC-AUDIT-003 (`Decision.model_error` / `raw_response` +
+per-step `logger.warning`, commits `35c0577` / `75eba2f`) and improved
+Cerebras HTTP error surfacing (`35a1f2d`). Do not re-implement those
+either.
+
+---
+
+### [P0] ARC-HANDOFF-001 — The Kaggle submission notebook contains no model
+
+**Status:** UNRESOLVED · **Source:** ARC-AUDIT-003, ARC-AUDIT-015 ·
+**Category:** Kaggle / strategy
+
+#### Problem
+A submission built from any current branch runs the agent with **no
+language model at all**. It plays heuristics-only and fails silently —
+no exception, no crash, just a low score.
+
+#### Evidence
+- `notebooks/kernel-metadata.json`: `model_sources: []`,
+  `dataset_sources: []` — identical on `master`,
+  `feat/baseline-120-followups`, and
+  `integration/baseline-120-colab-ready`.
+- `scripts/build_notebook.py`: zero occurrences of `vllm`, zero
+  occurrences of `ZERX_BACKEND` on all three branches.
+- The `.env` the run cell writes contains only ARC gateway variables.
+- Therefore `Config.backend` falls to its default `"fake"`, and
+  `select_backend` returns `FakeModelBackend()` with an empty response
+  list, whose every `generate()` raises `RuntimeError`.
+- Confirmed by importing the real built bundle:
+  `select_backend(Config())` → `FakeModelBackend`.
+
+#### Root Cause
+The Gemma serving path was only ever built for Colab
+(`scripts/build_colab_notebook.py`). It was never extended to the Kaggle
+submission notebook. `ACCELERATOR = "t4"` (2×16 GB) also contradicts
+AGENTS.md's RTX Pro 6000 (48 GB) target.
+
+#### ARC-AGI-3 Impact
+Total. Exploration, modeling, goal inference and planning are all
+absent — the entire Gemma thesis is missing from the scored artifact.
+Every decision falls through the fallback chain.
+
+#### Reproduction
+```bash
+.venv/bin/python scripts/build_notebook.py
+# extract the %%writefile /tmp/zerx/* cells into a dir, then:
+PYTHONPATH=<dir> python -c "from zerx.config import Config; \
+from zerx.model_backend import select_backend; print(type(select_backend(Config())))"
+# -> <class 'zerx.model_backend.FakeModelBackend'>
+```
+
+#### Expected Behavior
+The notebook attaches Gemma-4-31B as a Kaggle model source, serves it
+(vLLM, offline, from `/kaggle/input`), and sets `ZERX_BACKEND=gemma_kaggle`
++ `ZERX_PLATFORM=kaggle` so `select_backend` returns `GemmaModelBackend`.
+
+#### Current Behavior
+No weights attached, no server started, backend silently `fake`.
+
+#### Existing Branch Search
+Branches checked: all 15 (`master`, `day1-local-skeleton`,
+`day2-colab-gemma-baseline-100`, `feat/baseline-115-exact-state-memory`,
+`feat/baseline-120-backend-wiring`, `feat/baseline-120-colab-validation`,
+`feat/baseline-120-eval-harness`, `feat/baseline-120-followups`,
+`feat/baseline-120-local-regression`, `feat/baseline-130-hypothesis-memory`,
+`feat/exp-140-vlm-refinement`, `feat/exp-150-duck-tools-ab`,
+`feat/policy-prompt-legal-budget`, `integration/baseline-120-colab-ready`).
+
+Closest existing implementation:
+- `integration/baseline-120-colab-ready` @ `96063b9` settled the
+  **quantization decision** that this task depends on: Kaggle's 48 GB card
+  cannot hold bf16 (~61.4 GB), so Colab was switched to 8-bit fp8 to
+  mirror what Kaggle must run. `4a1fda1` also added framework
+  clone+slim to the Colab notebook.
+- `feat/baseline-120-followups` @ `75eba2f` makes the *failure* visible
+  (`model_error` + `logger.warning`) but attaches no model.
+
+Why neither fully solves this: both change Colab or observability. **No
+branch touches `notebooks/kernel-metadata.json`'s `model_sources`, adds a
+vLLM cell to `scripts/build_notebook.py`, or sets `ZERX_BACKEND` for the
+Kaggle run.** Verified by direct `git show` on every branch.
+
+#### Recommended Fix
+1. `notebooks/kernel-metadata.json`: add the Gemma model handle to
+   `model_sources` (and any wheel dataset to `dataset_sources`).
+2. `scripts/build_notebook.py`: set `ACCELERATOR = "rtx6000"`; add a cell
+   that installs vLLM offline and launches the server against the
+   `/kaggle/input` model path, using the **8-bit fp8** configuration
+   already validated on `integration/baseline-120-colab-ready` (reuse
+   that branch's flags — do not re-derive them).
+3. Export `ZERX_BACKEND=gemma_kaggle`, `ZERX_PLATFORM=kaggle`, and
+   `ZERX_GEMMA_BASE_URL` before `main.py --agent myagent` runs.
+4. Add a readiness gate: the run cell should fail fast if the server is
+   not answering, rather than proceeding into a heuristics-only run.
+
+Invariants to preserve: internet stays disabled; nothing is downloaded at
+eval time; `zerx/backends/` is still never bundled; the existing
+build-time secret scan still gates the build.
+
+#### Acceptance Criteria
+- [ ] Built bundle's `select_backend(Config.from_env())` returns
+      `GemmaModelBackend`, not `FakeModelBackend`
+- [ ] `model_sources` is non-empty and resolves under `/kaggle/input`
+- [ ] No network access is attempted at evaluation time
+- [ ] Server-unreachable causes a loud, early failure, not silent fallback
+- [ ] `zerx/backends/` still absent from the bundle; secret scan still passes
+- [ ] Existing tests continue passing
+
+#### Tests Required
+Extend `tests/test_kaggle_bundle_importable.py`: assert the built
+notebook sets `ZERX_BACKEND` to a real backend and that
+`kernel-metadata.json` has a non-empty `model_sources`; a unit test that
+`select_backend` returns `GemmaModelBackend` for the Kaggle env vars; an
+offline test asserting no `pip install` without `--no-index`.
+
+#### Risks / Side Effects
+Model load can dominate the ~9 h budget; `rtx6000` burns GPU quota
+faster. A wrong `ZERX_PLATFORM` re-enables the `cerebras_dev` guard path.
+
+#### Dependencies
+Depends on: `integration/baseline-120-colab-ready` @ `96063b9` (the 8-bit
+fp8 parity decision and validated vLLM flags).
+
+#### Definition of Done
+Kaggle notebook builds, imports, starts the model, plays with
+`source="model"` decisions in the trace, and the run is recorded in an
+experiment file with GPU/precision/model revision.
+
+---
+
+### [P1] ARC-HANDOFF-002 — Concurrent game threads share mutable `GameAction` singletons
+
+**Status:** UNRESOLVED · **Source:** ARC-AUDIT-007 · **Category:** Correctness / concurrency
+
+#### Problem
+On Kaggle all games run **concurrently in threads**, and every thread
+mutates the same process-wide `GameAction` enum members. One game can
+submit another game's click coordinates.
+
+#### Evidence
+- `main.py` (vendored): with no `--game`, "an agent swarm will play all
+  available games". The Kaggle run cell calls
+  `python main.py --agent myagent` — no `--game`.
+- `agents/swarm.py:76-95`: builds one agent per game, then
+  `Thread(target=a.main, daemon=True)` for each, all started together.
+- `arcengine.enums.GameAction.set_data` is
+  `self.action_data = self.action_type(**data)` — mutating a shared
+  singleton.
+- `agent/my_agent.py:_to_game_action` mutates
+  `GameAction.ACTION6.action_data` and `.reasoning`, returns the shared
+  member; the framework reads `action.action_data` **later**, in
+  `do_action_request`.
+
+#### Root Cause
+Upstream architecture: actions are singletons carrying mutable payloads,
+and there is a read-after-write window we do not control. Our agent
+inherits it and additionally writes `.reasoning`.
+
+#### ARC-AGI-3 Impact
+Corrupts ACTION6 — the most information-rich action — across all games at
+once. Also poisons `TransitionLedger` and `ExactStateMemory`, which record
+the action we *intended*, not the one actually sent, so the evidence loop
+learns from fiction. Invisible locally: `make verify-local` passes
+`--game`, so single-game runs never reproduce it.
+
+#### Reproduction
+Run two games concurrently through `Swarm` with an agent that logs both
+the coordinates it set and the coordinates present at
+`do_action_request` time; they diverge under load.
+
+#### Expected Behavior
+The coordinates a game submits are always the coordinates that game's
+policy chose.
+
+#### Current Behavior
+Another thread can overwrite them in between.
+
+#### Existing Branch Search
+Branches checked: all 15. Grepped every branch's `agent/my_agent.py` for
+`Lock`, `threading`, `deepcopy`, `copy(` — **zero matches on every
+branch**. No branch modifies `_to_game_action` at all.
+
+Why nothing solves it: `feat/baseline-120-followups` touches
+`my_agent.py` (+52 lines) but only for trace recording; it does not
+address action identity or thread safety.
+
+#### Recommended Fix
+This is **not** fixable from inside `my_agent.py` alone — we do not
+control the window between `choose_action` returning and `take_action`
+reading. Two credible options, both owner decisions:
+- **(a) One game per process** — change the Kaggle run cell to iterate
+  games sequentially or in separate processes. Simplest, no framework
+  patch; costs wall-clock, which matters against the ~9 h budget.
+- **(b) Patch the bundled framework copy** so `do_action_request`
+  receives an immutable per-call action payload rather than reading the
+  shared enum.
+Record whichever is chosen and why; do not do both.
+
+#### Acceptance Criteria
+- [ ] A multi-game concurrent run shows zero divergence between intended
+      and submitted action data
+- [ ] The chosen approach is documented with its runtime cost
+- [ ] `TransitionLedger` records match actually-submitted actions
+
+#### Tests Required
+A threading regression test driving two agents concurrently and asserting
+each submitted action matches that agent's own decision.
+
+#### Risks / Side Effects
+(a) increases wall-clock and may not finish all games in budget.
+(b) means shipping a modified framework — re-check competition rules.
+
+#### Definition of Done
+Concurrency hazard eliminated or explicitly accepted in writing with
+measured impact.
+
+---
+
+### [P1] ARC-HANDOFF-003 — Four ablation flags cannot change behaviour
+
+**Status:** UNRESOLVED · **Source:** ARC-AUDIT-008/009/010/011 ·
+**Category:** Experiment integrity
+
+#### Problem
+Four configuration flags reach `eval/run_ablation.py`'s matrix while
+controlling nothing. Any A/B using them is guaranteed to report "no
+effect", which risks discarding good ideas for the wrong reason —
+directly undermining AGENTS.md's promotion-gate methodology.
+
+#### Evidence
+- **`memory_on` (default `True`)** — `zerx/policy.py` calls
+  `maybe_refresh(..., summarizer=lambda prev, ctx: prev, ...)`. The
+  summary can never become non-empty; the prompt permanently reads
+  `What you've learned so far: (nothing yet)`.
+- **`structured_memory_on`** — `memory.render_for_prompt()` has **zero**
+  production callers and `build_prompt` has no structured-memory
+  parameter. When enabled it runs a full `perceive()` flood-fill **every
+  action** to feed a no-op whose output is never read.
+- **`arbiter_on`** — `candidates.select_candidate` gates on
+  `config.arbiter_on and arbiter is not None`, but `decide()` calls
+  `select_candidate(model_candidates, config)` with **no arbiter
+  argument**. Unsatisfiable.
+- **`duck_objects_on`** — appears only in `zerx/config.py` and
+  `eval/run_ablation.py:39`. Nothing in `zerx/` or `agent/` reads it.
+  (`zerx/scene.py` being unwired is intentional per its docstring; the
+  **ablation entry** is the defect.)
+
+#### Root Cause
+Each Day-3 track landed its data structures and its config flag, but the
+final wiring into the live `decide()`/prompt path was left for later.
+The flags shipped anyway.
+
+#### ARC-AGI-3 Impact
+No direct gameplay harm — but it makes the experiment ladder untrustworthy,
+and `structured_memory_on` wastes CPU per action for nothing.
+
+#### Existing Branch Search
+Branches checked: all 15. On `feat/baseline-120-followups` and
+`integration/baseline-120-colab-ready`, verified directly:
+`summarizer=lambda prev, ctx: prev` still present;
+`select_candidate(model_candidates, config)` still arbiter-less;
+`duck_objects_on` still only in `config.py`; `render_for_prompt` still
+uncalled. **No branch wires any of the four.**
+
+#### Recommended Fix
+Per flag, choose *wire* or *remove* — do not leave a third state:
+- `memory_on`: supply a real summarizer (a bounded model call at
+  `memory_refresh_interval`), measuring its latency separately per
+  AGENTS.md; or default it to `False` until then.
+- `structured_memory_on`: add a parameter to `build_prompt` and render
+  `render_for_prompt(state)`; until then, skip the `perceive()` call so
+  the flag is free rather than merely useless.
+- `arbiter_on`: pass an arbiter backend from `decide()`, or delete the
+  flag and the `_select_with_arbiter` path.
+- `duck_objects_on`: remove from `eval/run_ablation.py`'s
+  `_CONFIG_ENV_MAP` until `zerx/scene.py` is actually wired.
+
+#### Acceptance Criteria
+- [ ] Every flag in `_CONFIG_ENV_MAP` demonstrably changes at least one
+      observable behaviour, proven by a test
+- [ ] No flag defaults to `True` while being a no-op
+- [ ] `structured_memory_on=True` no longer costs a `perceive()` per
+      action unless its output is used
+
+#### Tests Required
+For each retained flag, a test asserting on/off produce different
+`Decision` output or different prompt text. A guard test asserting every
+key in `_CONFIG_ENV_MAP` corresponds to a flag read somewhere in
+`zerx/` or `agent/`.
+
+#### Risks / Side Effects
+Wiring `memory_on` adds model calls (latency, not action budget — measure
+separately). Removing flags changes `Config.config_hash()`, so prior
+experiment records become non-comparable — note it in the experiment log.
+
+#### Definition of Done
+`_CONFIG_ENV_MAP` contains only flags with proven behavioural effect.
+
+---
+
+### [P0-integration] ARC-HANDOFF-004 — Merge hazard: two branches edit the same `decide()` block, one would revert the legal-actions fix
+
+**Status:** UNRESOLVED (integration-time hazard) ·
+**Source:** branch-wide resolution check · **Category:** Integration
+
+#### Problem
+`feat/policy-prompt-legal-budget` and `feat/baseline-120-followups` both
+modify the **same lines** of `decide()`'s model-call block in
+`zerx/policy.py`. A careless conflict resolution that takes "theirs"
+would **silently revert the legal-actions fix** — the confirmed root cause
+of `baseline-120`'s flat `0.0` sweep (known issue 6).
+
+#### Evidence
+- Mine (`8a6bc05`):
+  `build_prompt(perception, new_memory, candidates, legal_actions, budget)`
+  at both call sites.
+- Theirs (`35a1f2d`): `raw_response = backend.generate(build_prompt(perception, new_memory, candidates))`
+  and `except Exception as exc: model_error = ...` — keeps the **old
+  3-argument** `build_prompt` call.
+- Verified: `feat/baseline-120-followups` has **0** occurrences of
+  `Legal actions this turn`.
+
+#### Root Cause
+Parallel branches off the same `master` touching one hot function, with
+neither aware of the other. Not a bug in either branch.
+
+#### Why this is not "duplicate work"
+The two changes are **complementary, not competing**:
+- mine adds *inputs* to the prompt (legal actions, budget)
+- theirs adds *outputs* from the call (`raw_response`, `model_error`)
+The correct resolution is a **union**, not a choice.
+
+#### Recommended Fix (at merge time)
+Resolve to a block that keeps both:
+```python
+raw_response = backend.generate(
+    build_prompt(perception, new_memory, candidates, legal_actions, budget)
+)
+parsed = parse_action(raw_response, legal_actions)
+except Exception as exc:
+    parsed = None
+    model_error = f"{type(exc).__name__}: {exc}"
+```
+and the same 5-argument `build_prompt(...)` inside the
+`candidate_count > 1` branch.
+
+#### Acceptance Criteria
+- [ ] Post-merge `zerx/policy.py` contains **both** `Legal actions this
+      turn` and `model_error`
+- [ ] `tests/test_policy_decide.py`'s legal-action tests pass
+- [ ] `feat/baseline-120-followups`' trace tests pass
+- [ ] Combined suite ≥ 332 + this branch's new tests, 0 failures
+
+#### Dependencies
+Also note `integration/baseline-120-colab-ready` has **already merged**
+all three `feat/policy-prompt-legal-budget` commits
+(`e402a0d`, `c964ea0`, `8a6bc05`) — merging that branch and
+`feat/policy-prompt-legal-budget` separately will produce redundant (but
+harmless, already-identical) history. Merge order matters:
+`integration/baseline-120-colab-ready` first, then
+`feat/baseline-120-followups`, resolving the union above.
+
+---
+
+### [P3] ARC-HANDOFF-005 — Test tooling: root `pytest` is broken and marks are unregistered
+
+**Status:** UNRESOLVED · **Source:** ARC-AUDIT-019/020 · **Category:** Testing
+
+#### Problem
+A bare `pytest` from the repo root **fails collection** — it tries to
+collect the *vendored* framework's suite:
+`ERROR vendor/ARC-AGI-3-Agents/tests - ModuleNotFoundError: No module named 'tests.conftest'`.
+AGENTS.md's documented command (`uv run pytest -q`) therefore does not
+work as written; everyone must know to type `pytest tests`.
+
+Separately, `cerebras_live` and `slow_local_engine` are **unregistered**
+marks (`PytestUnknownMarkWarning`), so `-m` filtering silently depends on
+convention — a typo'd mark name selects nothing and reports success.
+
+#### Evidence
+There is no `pytest.ini`, `pyproject.toml`, `setup.cfg`, or `tox.ini`
+anywhere in `git ls-files` — confirmed absent on **all** branches.
+`feat/baseline-120-followups`' own HANDOFF notes the same warning as
+"pre-existing, unrelated" — acknowledged there, not fixed.
+
+#### Recommended Fix
+Add a root `pytest.ini` (or `[tool.pytest.ini_options]`) with:
+```ini
+[pytest]
+testpaths = tests
+markers =
+    cerebras_live: hits the real Cerebras API; requires CEREBRAS_API_KEY
+    slow_local_engine: drives the real local game engine; slow
+```
+
+#### Acceptance Criteria
+- [ ] bare `pytest` from the repo root collects only `tests/` and passes
+- [ ] no `PytestUnknownMarkWarning`
+- [ ] `-m "not slow_local_engine"` still filters correctly
+- [ ] AGENTS.md's documented command works as written
+
+#### Risks / Side Effects
+`testpaths` changes what CI collects by default — confirm no intended
+test lives outside `tests/`.
+
+---
+
+### [P3] ARC-HANDOFF-006 — Config/scanner hardening (three small, independent items)
+
+**Status:** UNRESOLVED · **Source:** ARC-AUDIT-016/017/018 ·
+**Category:** Configuration / security
+
+Verified unresolved on **all** branches (`_env_int` has no `try/except`;
+`Config.__post_init__` still has exactly one `platform == "kaggle"`
+check; `zerx/secret_scan.py` still has exactly 2 `re.compile` patterns).
+
+1. **`Config.from_env` crashes on a malformed value.** `_env_int` /
+   `_env_float` call bare `int()`/`float()`, so `ZERX_BUDGET_SOFT_CAP=abc`
+   raises `ValueError` inside `MyAgent.__init__` — **outside**
+   `choose_action`'s catch-all, so the whole game aborts on a typo.
+   *Fix:* catch and re-raise with the offending variable name, or fall
+   back to the default with a loud warning. Decide which — a silent
+   fallback can hide a misconfigured experiment.
+2. **Cerebras lockout implements 1 of 3 required conditions.** AGENTS.md
+   requires rejection "whenever `platform=kaggle`, competition mode is
+   active, or internet is disabled"; only the first exists. Residual risk
+   is low (defence in depth: `CerebrasDevBackend`'s own guard, plus the
+   bundle never ships `zerx/backends/`), but the stated contract is
+   unmet. *Fix:* add the two missing conditions to
+   `Config.__post_init__`.
+3. **Secret scanner is literal-pattern-only.** `zerx/secret_scan.py`
+   matches only `api.cerebras.ai` and `CEREBRAS_API_KEY`; a leaked key
+   *value* without its variable name passes. *Fix:* add generic
+   high-entropy / `sk-`-prefixed / bearer-token patterns. Keep the
+   existing `secret_scan.py` self-exemption narrow.
+
+#### Acceptance Criteria
+- [ ] Malformed `ZERX_*` value produces a clear, actionable error naming
+      the variable (or a warned default) — never a bare `ValueError`
+- [ ] `Config` rejects `cerebras_dev` under all three documented
+      conditions, with a test per condition
+- [ ] Secret scan catches a planted bare key value, not just the name
+- [ ] Existing scan tests still pass

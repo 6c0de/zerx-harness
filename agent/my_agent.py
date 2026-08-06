@@ -60,8 +60,14 @@ def _to_game_frame(frame: FrameData) -> GameFrame:
     - `frame.state` is a GameState enum; both NOT_PLAYED and GAME_OVER map
       to `is_game_over=True` so decide()'s terminal short-circuit fires on
       a game's very first call as well as after a death.
-    - FrameData has no `.score` field (only level-completion counters, a
-      different concept) — default to 0 rather than mis-mapping one.
+    - FrameData has no field literally named `.score`, but it does expose
+      `levels_completed` (verified in `arcengine.enums.FrameData`), and in
+      ARC-AGI-3 level completion IS the scored progress signal. Map it onto
+      `GameFrame.score` so it actually reaches the pipeline: it is what makes
+      `TransitionRecord.score_delta` (and therefore `.effective`) able to
+      report "that action completed a level" instead of being hardcoded to 0,
+      and it is the `level_delta` channel `ExactStateMemory` records. Leaving
+      it at 0 silently blinded the agent to its only progress feedback.
     """
     sub_frames = frame.frame
     grid_rows = sub_frames[-1] if sub_frames else []
@@ -74,7 +80,12 @@ def _to_game_frame(frame: FrameData) -> GameFrame:
         | {ActionName.RESET}
     )
     is_game_over = frame.state in (GameState.NOT_PLAYED, GameState.GAME_OVER)
-    return GameFrame(grid=grid, legal_actions=legal, is_game_over=is_game_over, score=0)
+    return GameFrame(
+        grid=grid,
+        legal_actions=legal,
+        is_game_over=is_game_over,
+        score=frame.levels_completed,
+    )
 
 
 def _to_game_action(action: Action) -> GameAction:
@@ -212,9 +223,9 @@ class MyAgent(Agent):
             and self._pending_before_frame is not None
             and _shapes_match(self._pending_before_frame, frame)
         ):
-            # level_delta is currently always 0 -- _to_game_frame hardcodes
-            # score=0; this channel is inert until a real score/level source
-            # is wired (see review notes).
+            # level_delta now carries real signal: _to_game_frame maps
+            # FrameData.levels_completed onto GameFrame.score, so score_delta
+            # is +1 exactly on the transition that completed a level.
             self._exact_state_memory.record_outcome(
                 state_signature=grid_hash(self._pending_before_frame),
                 action_signature=action_signature(self._pending_decision.action),

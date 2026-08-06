@@ -125,23 +125,50 @@ def _random_fallback(legal_actions: FrozenSet[ActionName], grid_size: int = 64) 
     return Action(name=name)
 
 
+# A 64x64 frame is legally allowed to segment into thousands of
+# single-cell objects (a two-colour checkerboard yields 4096), which
+# rendered ~49k tokens of object table into a single prompt — enough to
+# overflow the context window and fail or truncate the call outright.
+# The ranked click-candidate list, not this table, is what the model acts
+# on; the table is supporting detail, so bounding it costs little.
+_MAX_PROMPT_OBJECTS = 60
+
+
 def build_prompt(
     perception: PerceptionResult,
     memory: MemoryState,
     candidates: Sequence[ClickCandidate] = (),
+    legal_actions: FrozenSet[ActionName] = frozenset(),
+    budget: Optional[BudgetSignal] = None,
 ) -> str:
     """STRATEGY.md §8: show the model its top ranked click candidates, not
     just the raw object table, so it can select ACTION6 by label instead of
     guessing coordinates — directly reduces the coordinate-hallucination
     failure mode.
+
+    Also surfaces `legal_actions` (AGENTS.md's required control flow step 2:
+    "do not assume all games support the same actions") and `budget` as a
+    strategy signal (AGENTS.md step 7: never a forced/invented move, just a
+    hint). Deliberately does not describe what ACTION1-ACTION5 *do* —
+    AGENTS.md forbids hard-coding their semantics since they vary by game.
     """
+    shown_objects = perception.objects[:_MAX_PROMPT_OBJECTS]
     object_lines = (
         "\n".join(
             f"- {obj.label}: color={obj.color} size={obj.size} bbox={obj.bbox}"
-            for obj in perception.objects
+            for obj in shown_objects
         )
         or "(no non-background objects)"
     )
+    omitted = len(perception.objects) - len(shown_objects)
+    if omitted > 0:
+        # Tell the model the table is truncated rather than letting it assume
+        # it is exhaustive — a silently-cut list invites false "there is
+        # nothing else on the board" reasoning.
+        object_lines += (
+            f"\n(+{omitted} more objects not listed; "
+            f"showing the first {_MAX_PROMPT_OBJECTS} of {len(perception.objects)})"
+        )
     candidate_lines = (
         "\n".join(
             f"- {c.object_label}: click (x={c.x}, y={c.y}), score={c.score:.2f}"
@@ -149,15 +176,25 @@ def build_prompt(
         )
         or "(no click candidates)"
     )
+    legal_action_names = ", ".join(sorted(a.value for a in legal_actions)) or "(none)"
+    budget_line = (
+        f"Actions taken so far: {budget.actions_taken} (soft cap {budget.soft_cap}). "
+        "This is a strategy signal only, not a required move."
+        if budget is not None
+        else "(no budget signal)"
+    )
     return (
         "You are playing a grid-based puzzle game.\n"
         f"Grid:\n{perception.ascii_grid}\n\n"
         f"Objects:\n{object_lines}\n\n"
         "Ranked click candidates (if you choose ACTION6, prefer one of "
         f"these exact coordinates over guessing):\n{candidate_lines}\n\n"
+        f"Legal actions this turn: {legal_action_names}\n\n"
+        f"Action budget: {budget_line}\n\n"
         f"What you've learned so far: {memory.summary or '(nothing yet)'}\n\n"
         'Respond with exactly one JSON object: {"action": "<ACTION_NAME>", '
-        '"data": {"x": <int>, "y": <int>}} (data only required for ACTION6).'
+        '"data": {"x": <int>, "y": <int>}} (data only required for ACTION6), '
+        "using one of the legal actions listed above."
     )
 
 
@@ -225,7 +262,7 @@ def decide(
         try:
             from zerx.candidates import generate_candidates, select_candidate
 
-            prompt = build_prompt(perception, new_memory, candidates)
+            prompt = build_prompt(perception, new_memory, candidates, legal_actions, budget)
             model_candidates = generate_candidates(
                 backend, prompt, legal_actions, config.candidate_count
             )
@@ -236,7 +273,9 @@ def decide(
             model_error = f"{type(exc).__name__}: {exc}"
     else:
         try:
-            raw_response = backend.generate(build_prompt(perception, new_memory, candidates))
+            raw_response = backend.generate(
+                build_prompt(perception, new_memory, candidates, legal_actions, budget)
+            )
             parsed = parse_action(raw_response, legal_actions)
         except Exception as exc:
             parsed = None
