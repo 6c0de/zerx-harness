@@ -11,7 +11,52 @@ def test_default_config_values():
     assert cfg.heuristic_first is False
     assert cfg.arbiter_on is False
     assert cfg.memory_on is True
+    assert cfg.max_actions == 400
+    assert cfg.max_wall_seconds == 7200
+    # Must stay >= max_actions: the budget signal flips at 80% of this
+    # value, and below the real action horizon it silences the model for
+    # the remainder of every game.
+    assert cfg.budget_soft_cap == 400
+
+
+def test_default_budget_soft_cap_does_not_silence_the_model_early():
+    """Regression: budget_soft_cap defaulted to 50 while games ran far
+    longer, so BudgetSignal.should_favor_execution flipped at action 40 and
+    stayed True — every later step with any click candidate skipped the
+    model call entirely.
+    """
+    from zerx.budget import evaluate_budget
+
+    cfg = Config()
+    last_action = cfg.max_actions - 1
+    assert evaluate_budget(0, cfg.budget_soft_cap).should_favor_execution is False
+    midgame = evaluate_budget(cfg.max_actions // 2, cfg.budget_soft_cap)
+    assert midgame.should_favor_execution is False
+    assert evaluate_budget(last_action, cfg.budget_soft_cap).should_favor_execution is True
+
+
+def test_max_actions_and_wall_seconds_from_env():
+    cfg = Config.from_env({"ZERX_MAX_ACTIONS": "150", "ZERX_MAX_WALL_SECONDS": "60"})
+    assert cfg.max_actions == 150
+    assert cfg.max_wall_seconds == 60
+
+
+def test_rejects_non_positive_max_actions():
+    with pytest.raises(ValueError, match="max_actions"):
+        Config(max_actions=0)
+
+
+def test_rejects_negative_max_wall_seconds():
+    with pytest.raises(ValueError, match="max_wall_seconds"):
+        Config(max_wall_seconds=-1)
+
+
+def test_low_budget_soft_cap_is_allowed_but_warns(caplog):
+    """A low soft cap stays a legal ablation — it just must never be silent."""
+    with caplog.at_level("WARNING", logger="zerx.config"):
+        cfg = Config(budget_soft_cap=50, max_actions=400)
     assert cfg.budget_soft_cap == 50
+    assert "budget_soft_cap=50 is below max_actions=400" in caplog.text
 
 
 def test_from_env_missing_uses_defaults():
@@ -159,3 +204,36 @@ def test_trace_export_path_read_from_env():
 def test_trace_export_path_absent_from_env_stays_none():
     config = Config.from_env({})
     assert config.trace_export_path is None
+
+
+def test_malformed_int_env_var_names_the_variable_and_the_value():
+    """ARC-HANDOFF-006: `int()` raised a bare "invalid literal" from inside
+    MyAgent.__init__, outside choose_action's catch-all, so a typo aborted
+    the whole game with an unattributable message.
+    """
+    with pytest.raises(ValueError, match="ZERX_BUDGET_SOFT_CAP='abc'"):
+        Config.from_env({"ZERX_BUDGET_SOFT_CAP": "abc"})
+
+
+def test_malformed_float_env_var_names_the_variable_and_the_value():
+    with pytest.raises(ValueError, match="ZERX_HEURISTIC_CONFIDENCE_THRESHOLD='high'"):
+        Config.from_env({"ZERX_HEURISTIC_CONFIDENCE_THRESHOLD": "high"})
+
+
+@pytest.mark.parametrize(
+    "kwargs, reason",
+    [
+        ({"platform": "kaggle"}, "platform=kaggle"),
+        ({"competition_mode": True}, "competition mode is active"),
+        ({"internet_enabled": False}, "internet is disabled"),
+    ],
+)
+def test_cerebras_lockout_covers_all_three_documented_conditions(kwargs, reason):
+    """AGENTS.md requires rejection under all three; only the first existed."""
+    with pytest.raises(ValueError, match=reason):
+        Config(backend="cerebras_dev", **kwargs)
+
+
+def test_cerebras_dev_is_still_allowed_in_ordinary_local_development():
+    cfg = Config(backend="cerebras_dev")
+    assert cfg.backend == "cerebras_dev"

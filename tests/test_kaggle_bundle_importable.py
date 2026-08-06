@@ -267,3 +267,98 @@ def test_bundle_contains_no_cerebras_endpoint_or_credential_reference():
             continue
         assert "api.cerebras.ai" not in source
         assert "CEREBRAS_API_KEY" not in source
+
+
+def _cells(notebook):
+    return [c["source"] for c in notebook["cells"] if c["cell_type"] == "code"]
+
+
+def test_kaggle_env_selects_a_real_model_backend_not_the_fake_one():
+    """ARC-HANDOFF-001's core symptom: with no ZERX_BACKEND set,
+    Config.backend stays "fake", select_backend returns FakeModelBackend(),
+    every generate() raises, and the agent plays heuristics-only with no
+    crash and no log line -- just a near-zero score.
+    """
+    from zerx.config import Config
+    from zerx.model_backend import FakeModelBackend, GemmaModelBackend, select_backend
+
+    assert isinstance(select_backend(Config()), FakeModelBackend)  # the old state
+
+    kaggle_env = {
+        "ZERX_BACKEND": "gemma_kaggle",
+        "ZERX_PLATFORM": "kaggle",
+        "ZERX_GEMMA_BASE_URL": "http://localhost:8000/v1/chat/completions",
+    }
+    backend = select_backend(Config.from_env(kaggle_env))
+    assert isinstance(backend, GemmaModelBackend)
+    assert backend.base_url == "http://localhost:8000/v1/chat/completions"
+
+
+def test_run_cell_exports_the_backend_env_vars():
+    import scripts.build_notebook as build_notebook
+
+    run_cell = next(s for s in _cells(build_notebook.build()) if "main.py --agent myagent" in s)
+    assert "ZERX_BACKEND=gemma_kaggle" in run_cell
+    assert "ZERX_PLATFORM=kaggle" in run_cell
+    assert "ZERX_GEMMA_BASE_URL=" in run_cell
+
+
+def test_notebook_refuses_to_run_modelless_rather_than_scoring_meaninglessly():
+    """The guarantee this locks in is the one ARC-HANDOFF-001 was about: a
+    submission must never quietly fall through to heuristics-only play.
+
+    It deliberately does NOT assert *how* the model is served. An earlier
+    version of this test asserted a vLLM server and `--quantization fp8`,
+    both of which came from the documented 48 GB figure for the RTX card.
+    The live probe (docs/superpowers/experiments/kaggle-env-probe.md)
+    measured ~96 GB, so bf16 fits, no quantization is needed and vLLM is
+    not installed at all. Pinning the mechanism would have re-broken the
+    notebook to satisfy a stale assumption; pin the invariant instead.
+    """
+    import scripts.build_notebook as build_notebook
+
+    combined = "\n".join(_cells(build_notebook.build()))
+
+    # Weights must be located, and a missing/misplaced mount must stop the run.
+    assert "KAGGLE_MODEL_DIR" in combined
+    assert "does not exist" in combined
+
+    # And the backend actually resolved at runtime must not be the fake one.
+    assert "FakeModelBackend" in combined
+    assert "heuristics-only" in combined
+    assert combined.count("raise SystemExit") >= 3
+
+
+def test_offline_invariant_no_pip_install_without_no_index():
+    """Internet is disabled at evaluation time; nothing may be downloaded."""
+    import re
+
+    import scripts.build_notebook as build_notebook
+
+    combined = "\n".join(_cells(build_notebook.build()))
+    installs = [
+        m.group(0)
+        for m in re.finditer(r"^[^\S\n]*!?pip install(?P<args>[^\n]*)", combined, re.M)
+    ]
+    assert installs, "expected at least one pip install line to check"
+    for line in installs:
+        assert "--no-index" in line, line
+
+
+def test_kernel_metadata_declares_a_model_source():
+    import json
+    from pathlib import Path
+
+    import scripts.build_notebook as build_notebook
+
+    meta = json.loads(
+        (Path(build_notebook.ROOT) / "notebooks" / "kernel-metadata.json").read_text()
+    )
+    assert meta["model_sources"], "empty model_sources means no weights are attached"
+    assert meta["enable_internet"] is False
+
+
+def test_accelerator_matches_the_documented_target_card():
+    import scripts.build_notebook as build_notebook
+
+    assert build_notebook.ACCELERATOR == "rtx6000"

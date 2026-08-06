@@ -14,9 +14,12 @@ Contract (enforced by the vendored `agents.agent.Agent` ABC):
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Deque, List, Optional, Tuple
 
 # Verified against the vendored arcengine/agents packages
 # (docs/superpowers/experiments/baseline-000.md, Task 1, Step 5).
@@ -29,15 +32,44 @@ from agents.agent import Agent
 from zerx.config import Config
 from zerx.exact_state_memory import ExactStateMemory, action_signature
 from zerx.heuristics import DeadSignatureTracker
-from zerx.memory import MemoryState, StructuredMemoryState, maybe_refresh_structured
+from zerx.memory import (
+    MemoryState,
+    StructuredMemoryState,
+    confirm_hypothesis,
+    maybe_refresh_structured,
+    record_notable_failure,
+)
 from zerx.model_backend import select_backend
 from zerx.perception import perceive
 from zerx.policy import Decision, _FALLBACK_PREFERENCE, decide
 from zerx.trace import TraceRecorder, JsonlTraceWriter, TraceMeta, build_trace_step
-from zerx.transitions import TransitionLedger, grid_hash
+from zerx.transitions import (
+    TransitionLedger,
+    TransitionRecord,
+    _describe_action as describe_action,
+    grid_hash,
+)
 from zerx.types import Action, ActionName, GameFrame
 
 logger = logging.getLogger(__name__)
+
+# ARC-HANDOFF-002. On Kaggle every game runs in its own thread of one
+# process (`agents/swarm.py` starts a Thread per agent), and `GameAction`
+# members are process-wide singletons whose payload `.set_data(...)`
+# mutates in place. The framework reads `action.action_data` *later*, in
+# `do_action_request`, so between our write and that read another game's
+# thread can overwrite the coordinates — one game submitting another
+# game's click. That also poisons TransitionLedger/ExactStateMemory, which
+# record the action we intended rather than the one actually sent, so the
+# evidence loop learns from fiction.
+#
+# This lock closes the window without patching the vendored framework and
+# without serializing gameplay: `take_action` below re-applies this
+# agent's own payload and calls straight through to `do_action_request`,
+# both inside the lock, so no other thread can interleave between the
+# write and the read. Only the submit itself is serialized — perception,
+# the model call, and everything else in `choose_action` stay concurrent.
+_ACTION_SUBMIT_LOCK = threading.Lock()
 
 
 def _to_game_frame(frame: FrameData) -> GameFrame:
@@ -164,13 +196,31 @@ class MyAgent(Agent):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._config = Config.from_env()
+        # The vendored `agents.agent.Agent` base hardcodes MAX_ACTIONS = 80 as
+        # a generic anti-infinite-loop guard, and `Agent.main()` reads
+        # `self.MAX_ACTIONS` off the instance. Inheriting it capped every
+        # Kaggle game at 81 actions — a hard ceiling well below what reaching
+        # a level completion takes, and invisible in the logs as anything but
+        # a low score. Set it from config (ZERX_MAX_ACTIONS) so the cap is a
+        # recorded, ablatable decision instead of an upstream default.
+        self.MAX_ACTIONS = self._config.max_actions
         self._memory = MemoryState()
         self._dead_signatures = DeadSignatureTracker()
         self._backend = select_backend(self._config)
         self._transitions = TransitionLedger()
+        # The evidence the model is shown each step: what its own recent
+        # actions actually did. The ledger already produced these records;
+        # until now nothing kept or read them (see zerx/transitions.py's
+        # render_transition_history).
+        self._recent_transitions: Deque[TransitionRecord] = deque(maxlen=20)
         self._exact_state_memory = ExactStateMemory()
         self._actions_taken = 0
         self._pending_decision: Optional[Decision] = None
+        # ARC-HANDOFF-002: this agent's own intended action/reasoning for
+        # the step currently in flight, kept off the shared GameAction
+        # singleton so take_action can re-apply it under the submit lock.
+        self._pending_submit: Optional[Action] = None
+        self._last_reasoning: Optional[dict] = None
         self._pending_before_frame: Optional[GameFrame] = None
         # --- baseline-130-hypothesis (feat/baseline-130-hypothesis-memory) ---
         self._structured_memory = StructuredMemoryState()
@@ -190,10 +240,92 @@ class MyAgent(Agent):
             trace_recorder = writer
         self.trace_recorder: Optional[TraceRecorder] = trace_recorder
 
+    def _structured_summarizer(
+        self, state: StructuredMemoryState, recent_context: str
+    ) -> StructuredMemoryState:
+        """Turn the recorded transition evidence into structured memory.
+
+        Deterministic and model-free, same reasoning as
+        `zerx/transitions.summarize_transitions`: reflection must not become
+        a second unbounded reasoning loop (AGENTS.md). An action observed to
+        change the board becomes a confirmed rule; one that never once did
+        becomes a notable failure. Kept here rather than in `zerx/memory.py`
+        so that module stays free of any transition-ledger dependency.
+        """
+        effective = {
+            describe_action(r.action) for r in self._recent_transitions if r.effective
+        }
+        useless = {
+            describe_action(r.action)
+            for r in self._recent_transitions
+            if not r.effective
+        } - effective
+
+        for name in sorted(effective):
+            state = confirm_hypothesis(state, f"{name} changes the board")
+        failures = {
+            f"{name} did nothing every time it was tried" for name in useless
+        } - set(state.notable_failures)
+        for failure in sorted(failures):
+            state = record_notable_failure(state, failure)
+        return state
+
+    @property
+    def _change_classifier(self):
+        """`Config.duck_objects_on` used to appear only in `config.py` and
+        `eval/run_ablation.py`'s matrix — nothing read it, so every A/B on
+        it was guaranteed to report "no effect" (ARC-HANDOFF-003). It now
+        selects whether each transition gets a semantic label from
+        `zerx/scene.py`'s object-level classifier (HUD_ONLY, OBJECT_MOVE,
+        RECOLOR_OR_TRANSFORM, ...) in the evidence block the model reads,
+        instead of only a raw changed-cell count. Off by default: the
+        classifier segments and boundary-traces both frames, which is real
+        per-action CPU.
+        """
+        if not self._config.duck_objects_on:
+            return None
+
+        def classify(before: GameFrame, after: GameFrame) -> str:
+            from zerx.scene import classify_transition, correspond_objects, perceive_scene
+
+            before_scene = perceive_scene(before)
+            after_scene = perceive_scene(after)
+            return classify_transition(
+                before_scene,
+                after_scene,
+                correspond_objects(before_scene, after_scene),
+                terminal=after.is_game_over,
+                level_delta=after.score - before.score,
+            )
+
+        return classify
+
     def is_done(self, frames: List[FrameData], latest_frame: FrameData) -> bool:
         # Stop once we win. Don't stop on GAME_OVER — we want to RESET and
         # retry (matches the real starter's own default behavior).
-        return latest_frame.state is GameState.WIN
+        if latest_frame.state is GameState.WIN:
+            return True
+        # Wall-clock guard. `Agent.main()` sets self.timer before the first
+        # action and checks is_done() before every subsequent one, so this
+        # bounds a single game's runtime. Raising max_actions raises
+        # wall-clock exposure against Kaggle's ~9h notebook limit; without
+        # this, one slow or hung model turns the entire run into a kill with
+        # no scorecard at all, instead of costing one game its tail. Disabled
+        # when max_wall_seconds is 0.
+        limit = self._config.max_wall_seconds
+        if limit > 0 and getattr(self, "timer", 0):
+            elapsed = time.time() - self.timer
+            if elapsed >= limit:
+                logger.warning(
+                    "%s: wall-clock guard hit (%.0fs >= %ds) after %d actions; "
+                    "ending this game early to protect the overall run budget",
+                    self.game_id,
+                    elapsed,
+                    limit,
+                    self.action_counter,
+                )
+                return True
+        return False
 
     def _choose_action_inner(
         self, frames: List[FrameData], latest_frame: FrameData
@@ -202,7 +334,9 @@ class MyAgent(Agent):
 
         # Finalize the PREVIOUS action's transition now that its result
         # (this frame) exists. Never do this before the frame arrives.
-        record = self._transitions.finalize(frame)
+        record = self._transitions.finalize(frame, classifier=self._change_classifier)
+        if record is not None:
+            self._recent_transitions.append(record)
         if (
             record is not None
             and self._pending_decision is not None
@@ -243,6 +377,10 @@ class MyAgent(Agent):
             config=self._config,
             backend=self._backend,
             actions_taken=self._actions_taken,
+            recent_transitions=tuple(self._recent_transitions),
+            structured_memory=(
+                self._structured_memory if self._config.structured_memory_on else None
+            ),
         )
 
         if decision.model_error is not None:
@@ -324,10 +462,16 @@ class MyAgent(Agent):
 
         # --- baseline-130-hypothesis (feat/baseline-130-hypothesis-memory) ---
         if self._config.structured_memory_on:
+            # `summarizer` used to be `lambda prev, ctx: prev`, so the
+            # structured state could never become non-empty -- and nothing
+            # read it either, so the flag ran a full perceive() flood-fill
+            # every action to feed a no-op whose output was discarded
+            # (ARC-HANDOFF-003). It now both feeds a real summarizer and
+            # reaches the prompt via decide(structured_memory=...).
             self._structured_memory = maybe_refresh_structured(
                 self._structured_memory,
                 recent_context=perceive(frame).ascii_grid,
-                summarizer=lambda prev, ctx: prev,
+                summarizer=self._structured_summarizer,
                 refresh_interval=self._config.memory_refresh_interval,
             )
         # --- end baseline-130-hypothesis ---
@@ -336,16 +480,22 @@ class MyAgent(Agent):
         self._pending_decision = decision
         self._pending_before_frame = frame
 
+        # Remember what this agent actually decided, independently of the
+        # shared enum member's mutable payload — `take_action` re-applies it
+        # under _ACTION_SUBMIT_LOCK immediately before the framework reads
+        # it (ARC-HANDOFF-002).
+        self._pending_submit = decision.action
         upstream = _to_game_action(decision.action)
         # AGENTS.md step 8: record the decision path, fallback/repair status,
         # and configuration ID so it reaches the framework's recorder. The
         # vendored `Agent.do_action_request` reads `.reasoning` straight off
         # the GameAction enum member (see vendor/ARC-AGI-3-Agents/agents/agent.py).
-        upstream.reasoning = {
+        self._last_reasoning = {
             "source": decision.source,
             "repaired": decision.repaired,
             "config_hash": self._config.config_hash(),
         }
+        upstream.reasoning = self._last_reasoning
         return upstream
 
     def choose_action(self, frames: List[FrameData], latest_frame: FrameData) -> GameAction:
@@ -365,4 +515,28 @@ class MyAgent(Agent):
                 type(exc).__name__,
                 exc,
             )
+            # No trusted intended action for this step — tell take_action not
+            # to re-apply a stale payload from the previous decision.
+            self._pending_submit = None
+            self._last_reasoning = None
             return _safe_fallback_action(latest_frame)
+
+    def take_action(self, action: GameAction) -> Optional[FrameData]:
+        """Re-apply this agent's own decision to the shared `GameAction`
+        singleton and submit it, both under a process-wide lock.
+
+        See `_ACTION_SUBMIT_LOCK` above. `choose_action` already called
+        `.set_data(...)`, but that happened an unbounded amount of wall
+        time earlier — a concurrent game's thread can overwrite it before
+        the framework reads `action.action_data` inside
+        `do_action_request`. Re-applying here, in the same critical section
+        as the read, is what actually makes the submitted coordinates this
+        game's own.
+        """
+        with _ACTION_SUBMIT_LOCK:
+            pending = getattr(self, "_pending_submit", None)
+            if pending is not None and pending.name == ActionName.ACTION6:
+                action.set_data({"x": pending.x, "y": pending.y})
+            if self._last_reasoning is not None:
+                action.reasoning = self._last_reasoning
+            return super().take_action(action)

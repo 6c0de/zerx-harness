@@ -256,7 +256,10 @@ def _run_live(args: argparse.Namespace) -> None:
         arc_env=env,
     )
     if args.max_steps:
-        agent.MAX_ACTIONS = min(agent.MAX_ACTIONS, args.max_steps)
+        # Plain assignment, not min(): MyAgent.__init__ now sets
+        # self.MAX_ACTIONS from Config, and a min() against it could only
+        # ever lower an explicitly requested cap, never raise it.
+        agent.MAX_ACTIONS = args.max_steps
 
     live_recorder = LivePygameRecorder(history_cap=args.history_cap)
     if args.save:

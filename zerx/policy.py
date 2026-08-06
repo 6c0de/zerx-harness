@@ -13,9 +13,19 @@ from typing import FrozenSet, Optional, Sequence, Tuple
 from zerx.budget import BudgetSignal, evaluate_budget
 from zerx.config import Config
 from zerx.heuristics import ClickCandidate, DeadSignatureTracker, rank_click_candidates
-from zerx.memory import MemoryState, maybe_refresh
+from zerx.memory import (
+    MemoryState,
+    StructuredMemoryState,
+    maybe_refresh,
+    render_for_prompt,
+)
 from zerx.model_backend import ModelBackend
 from zerx.perception import PerceptionResult, perceive
+from zerx.transitions import (
+    TransitionRecord,
+    render_transition_history,
+    summarize_transitions,
+)
 from zerx.types import Action, ActionName
 
 
@@ -32,6 +42,13 @@ def _extract_json_object(raw: str) -> Optional[str]:
     """Deterministic repair: strip markdown code fences and pull out the
     first {...} substring. No model call, no retried reasoning.
     """
+    if not isinstance(raw, str):
+        # A backend that returns None (or any non-str) on an empty/odd
+        # response used to raise AttributeError out of parse_action. It was
+        # inert only because decide()'s single call site happens to be inside
+        # a try/except; any other caller (zerx/candidates.py, tests, future
+        # tooling) got a crash instead of the documented "returns None".
+        return None
     stripped = raw.strip()
     stripped = re.sub(r"^```(?:json)?", "", stripped)
     stripped = re.sub(r"```$", "", stripped).strip()
@@ -45,6 +62,8 @@ def parse_action(raw: str, legal_actions: FrozenSet[ActionName]) -> Optional[Par
     if both attempts fail or the result doesn't validate — callers fall
     back per the documented fallback chain.
     """
+    if not isinstance(raw, str):
+        return None
     for attempt, candidate_text in enumerate((raw, _extract_json_object(raw))):
         if candidate_text is None:
             continue
@@ -104,16 +123,89 @@ _FALLBACK_PREFERENCE = (
 
 
 def _deterministic_fallback(
-    legal_actions: FrozenSet[ActionName], grid_size: int = 64
+    legal_actions: FrozenSet[ActionName],
+    grid_size: int = 64,
+    actions_taken: int = 0,
 ) -> Optional[Action]:
-    for name in _FALLBACK_PREFERENCE:
-        if name in legal_actions:
-            if name == ActionName.ACTION6:
-                return Action(name=name, x=grid_size // 2, y=grid_size // 2)
-            return Action(name=name)
+    """Pick a legal action by preference order, rotated by `actions_taken`.
+
+    Rotation matters: without it this always returned the single
+    highest-preference legal action, so a game with no model and no click
+    candidates (e.g. ls20, which never has ACTION6 legal) emitted the exact
+    same action on every step for the whole run — 121 consecutive ACTION1s
+    in a real local run. That is strictly worse than the upstream random
+    baseline: it gathers no information at all and cannot leave the start
+    state. Keying the rotation on `actions_taken` keeps the function pure
+    and deterministic (same inputs, same output) while making the sequence
+    actually explore the legal set.
+    """
+    ordered = [name for name in _FALLBACK_PREFERENCE if name in legal_actions]
+    if ordered:
+        name = ordered[actions_taken % len(ordered)]
+        if name == ActionName.ACTION6:
+            return Action(name=name, x=grid_size // 2, y=grid_size // 2)
+        return Action(name=name)
     if ActionName.RESET in legal_actions:
         return Action(name=ActionName.RESET)
     return None
+
+
+def _unprobed_actions(
+    legal_actions: FrozenSet[ActionName],
+    recent_transitions: Sequence[TransitionRecord],
+) -> Tuple[ActionName, ...]:
+    """Legal non-RESET actions whose effect has never been observed.
+
+    Derived from the transition records rather than from any new mutable
+    state, which is what keeps `decide()` a pure function.
+    """
+    tried = {record.action.name for record in recent_transitions}
+    return tuple(
+        name
+        for name in _FALLBACK_PREFERENCE
+        if name in legal_actions and name not in tried
+    )
+
+
+def _opening_probe(
+    legal_actions: FrozenSet[ActionName],
+    recent_transitions: Sequence[TransitionRecord],
+    candidates: Sequence[ClickCandidate],
+    actions_taken: int,
+    probe_actions: int,
+) -> Optional[Tuple[Action, Optional[str]]]:
+    """Spend the first few actions establishing what each action *does*.
+
+    The central problem in ARC-AGI-3 is discovering a game's control scheme,
+    and `build_prompt` deliberately never describes what ACTION1-ACTION5 mean
+    (AGENTS.md forbids hard-coding semantics that vary per game). So on the
+    opening moves the model is being asked to *guess* the controls, and every
+    guess it gets wrong costs an action anyway.
+
+    Trying each legal action exactly once instead is strictly cheaper: it
+    costs at most one action per action-name, needs no model call at all, and
+    hands the model a filled-in evidence table (see
+    `zerx/transitions.render_transition_history`) before its first real
+    decision. Returns (action, target_object_label) or None once every legal
+    action has been observed or the probe budget is spent.
+
+    ACTION6 is last in `_FALLBACK_PREFERENCE`, so it is only probed once
+    everything else has been; it is probed at the top-ranked click candidate
+    rather than a blind coordinate, and skipped entirely when there is no
+    candidate — one arbitrary click out of 4096 teaches nothing.
+    """
+    if probe_actions <= 0 or actions_taken >= probe_actions:
+        return None
+    unprobed = _unprobed_actions(legal_actions, recent_transitions)
+    if not unprobed:
+        return None
+    name = unprobed[0]
+    if name == ActionName.ACTION6:
+        if not candidates:
+            return None
+        top = candidates[0]
+        return Action(name=name, x=top.x, y=top.y), top.object_label
+    return Action(name=name), None
 
 
 def _random_fallback(legal_actions: FrozenSet[ActionName], grid_size: int = 64) -> Action:
@@ -140,6 +232,8 @@ def build_prompt(
     candidates: Sequence[ClickCandidate] = (),
     legal_actions: FrozenSet[ActionName] = frozenset(),
     budget: Optional[BudgetSignal] = None,
+    recent_transitions: Sequence["TransitionRecord"] = (),
+    structured_memory: Optional[StructuredMemoryState] = None,
 ) -> str:
     """STRATEGY.md §8: show the model its top ranked click candidates, not
     just the raw object table, so it can select ACTION6 by label instead of
@@ -151,6 +245,14 @@ def build_prompt(
     strategy signal (AGENTS.md step 7: never a forced/invented move, just a
     hint). Deliberately does not describe what ACTION1-ACTION5 *do* —
     AGENTS.md forbids hard-coding their semantics since they vary by game.
+
+    `recent_transitions` closes the evidence loop: without it the model saw
+    the board and the legal actions every step but never the *outcome* of
+    anything it had already tried, so it could not tell a no-op from a
+    useful move and had no reason to stop re-proposing a dead action. Since
+    ACTION1-ACTION5's meanings are game-specific and deliberately not
+    described here, observed outcomes are the only way the model can ever
+    learn what they do.
     """
     shown_objects = perception.objects[:_MAX_PROMPT_OBJECTS]
     object_lines = (
@@ -200,6 +302,12 @@ def build_prompt(
         if budget is not None
         else "(no budget signal)"
     )
+    history_lines = render_transition_history(recent_transitions)
+    structured_block = (
+        f"\nStructured memory:\n{render_for_prompt(structured_memory)}\n"
+        if structured_memory is not None
+        else ""
+    )
     return (
         "You are playing a grid-based puzzle game.\n"
         f"Grid:\n{perception.ascii_grid}\n\n"
@@ -207,7 +315,12 @@ def build_prompt(
         f"{candidates_section}"
         f"Legal actions this turn: {legal_action_names}\n\n"
         f"Action budget: {budget_line}\n\n"
-        f"What you've learned so far: {memory.summary or '(nothing yet)'}\n\n"
+        "What your recent actions actually did (the only evidence you have "
+        f"for what each action means in this game):\n{history_lines}\n\n"
+        f"What you've learned so far: {memory.summary or '(nothing yet)'}\n"
+        f"{structured_block}\n"
+        "Do not repeat an action that the history above shows changed "
+        "nothing from this same board state; try a different one instead.\n"
         'Respond with exactly one JSON object: {"action": "<ACTION_NAME>", '
         '"data": {"x": <int>, "y": <int>}} (data only required for ACTION6), '
         "using one of the legal actions listed above."
@@ -222,6 +335,8 @@ def decide(
     config: Config,
     backend: ModelBackend,
     actions_taken: int,
+    recent_transitions: Sequence[TransitionRecord] = (),
+    structured_memory: Optional[StructuredMemoryState] = None,
 ) -> Tuple[Decision, MemoryState]:
     """Implements the required control flow: terminal check, perception,
     heuristics, one bounded model call with deterministic repair, budget as
@@ -254,12 +369,42 @@ def decide(
 
     new_memory = memory
     if config.memory_on:
+        # A real summarizer, not the previous `lambda prev, ctx: prev`
+        # no-op that made memory_on a flag controlling nothing
+        # (ARC-HANDOFF-003) and pinned every prompt to "What you've learned
+        # so far: (nothing yet)". Derived from the transition ledger rather
+        # than a second model call, so it adds zero latency and zero action
+        # cost -- AGENTS.md warns specifically against turning reflection
+        # into an unbounded extra reasoning loop.
         new_memory = maybe_refresh(
             memory,
             recent_context=perception.ascii_grid,
-            summarizer=lambda prev, ctx: prev,  # deterministic no-op for the local skeleton
+            summarizer=lambda prev, ctx: summarize_transitions(recent_transitions) or prev,
             refresh_interval=config.memory_refresh_interval,
         )
+
+    # Information before exploitation: the probe runs ahead of both the
+    # heuristic and the model, because on the opening moves neither of them
+    # knows what any action does yet.
+    if config.opening_probe_on:
+        probe = _opening_probe(
+            legal_actions,
+            recent_transitions,
+            candidates,
+            actions_taken,
+            config.opening_probe_actions,
+        )
+        if probe is not None:
+            probe_action, probe_label = probe
+            return (
+                Decision(
+                    action=probe_action,
+                    source="probe",
+                    budget=budget,
+                    target_object_label=probe_label,
+                ),
+                new_memory,
+            )
 
     if heuristic_action is not None:
         return (
@@ -278,11 +423,28 @@ def decide(
         try:
             from zerx.candidates import generate_candidates, select_candidate
 
-            prompt = build_prompt(perception, new_memory, candidates, legal_actions, budget)
+            prompt = build_prompt(
+                perception,
+                new_memory,
+                candidates,
+                legal_actions,
+                budget,
+                recent_transitions=recent_transitions,
+                structured_memory=structured_memory,
+            )
             model_candidates = generate_candidates(
                 backend, prompt, legal_actions, config.candidate_count
             )
-            best = select_candidate(model_candidates, config)
+            # `arbiter_on` gated on `config.arbiter_on and arbiter is not
+            # None`, but this call site never passed an arbiter, so the flag
+            # was unsatisfiable (ARC-HANDOFF-003). Pass the same backend as
+            # the arbiter when the flag is on; `select_candidate` still
+            # falls back to the deterministic pick on any arbiter failure,
+            # and the flag stays off by default so this costs nothing
+            # unless deliberately enabled.
+            best = select_candidate(
+                model_candidates, config, arbiter=backend if config.arbiter_on else None
+            )
             parsed = best.parsed if best is not None else None
         except Exception as exc:
             parsed = None
@@ -290,7 +452,15 @@ def decide(
     else:
         try:
             raw_response = backend.generate(
-                build_prompt(perception, new_memory, candidates, legal_actions, budget)
+                build_prompt(
+                perception,
+                new_memory,
+                candidates,
+                legal_actions,
+                budget,
+                recent_transitions=recent_transitions,
+                structured_memory=structured_memory,
+            )
             )
             parsed = parse_action(raw_response, legal_actions)
         except Exception as exc:
@@ -324,7 +494,7 @@ def decide(
             new_memory,
         )
 
-    deterministic = _deterministic_fallback(legal_actions)
+    deterministic = _deterministic_fallback(legal_actions, actions_taken=actions_taken)
     if deterministic is not None:
         return (
             Decision(

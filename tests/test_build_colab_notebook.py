@@ -225,16 +225,21 @@ def test_smoke_game_cell_caps_steps_below_play_locals_default_for_colab_time_bud
     assert "MAX_STEPS_PER_GAME" in combined
 
 
-def test_smoke_game_cell_sets_max_actions_directly_not_via_min():
+def test_smoke_game_cell_sets_max_actions_via_config_env_not_via_min():
     """`min(getattr(MyAgentCls, "MAX_ACTIONS", ...), MAX_STEPS_PER_GAME)` can
     only ever LOWER the cap, never raise it above the vendored base Agent
     class's own default (80) -- confirmed by a real Colab run capping at
     81 actions/game instead of the requested 100 (docs/HANDOFF.md "Known
-    failures or risks" item 7). This cell always wants exactly
-    MAX_STEPS_PER_GAME, so it must be a direct assignment.
+    failures or risks" item 7).
+
+    The cap is now a Config field that `MyAgent.__init__` applies to the
+    *instance* (`self.MAX_ACTIONS = config.max_actions`), so setting the
+    class attribute here would be silently overwritten at construction --
+    the cell must go through ZERX_MAX_ACTIONS instead.
     """
     combined = _all_cell_sources(build_colab_notebook.build())
-    assert "MyAgentCls.MAX_ACTIONS = MAX_STEPS_PER_GAME" in combined
+    assert 'os.environ["ZERX_MAX_ACTIONS"] = str(MAX_STEPS_PER_GAME)' in combined
+    assert "MyAgentCls.MAX_ACTIONS =" not in combined
     assert 'getattr(MyAgentCls, "MAX_ACTIONS"' not in combined
 
 

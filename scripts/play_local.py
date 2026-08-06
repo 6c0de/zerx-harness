@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -85,9 +86,14 @@ def main() -> None:
         print(f"No --game specified; playing all {len(game_ids)} games "
               f"(this is what Kaggle does in competition rerun).\n")
 
+    # MyAgent now reads its own cap from Config (ZERX_MAX_ACTIONS) in
+    # __init__, which would overwrite anything set on the class here. Set the
+    # env var instead, before the class is imported/constructed. This also
+    # fixes the old `min(MyAgentCls.MAX_ACTIONS, args.max_steps)` form, which
+    # could only ever LOWER the cap below the inherited 80 — `--max-steps 100`
+    # silently ran 80 steps.
+    os.environ["ZERX_MAX_ACTIONS"] = str(args.max_steps)
     MyAgentCls = load_my_agent_class()
-    if hasattr(MyAgentCls, "MAX_ACTIONS"):
-        MyAgentCls.MAX_ACTIONS = min(MyAgentCls.MAX_ACTIONS, args.max_steps)
 
     per_game = []
     for i, game_id in enumerate(game_ids, 1):
@@ -111,7 +117,10 @@ def main() -> None:
         final = agent.frames[-1]
         per_game.append((game_id, final.state, final.levels_completed,
                          agent.action_counter))
-        print(f"  → state={final.state}, levels_completed={final.levels_completed}, "
+        # ASCII only: a Windows cp1254 console cannot encode "→" and raised
+        # UnicodeEncodeError here, aborting the whole multi-game loop after
+        # the first game.
+        print(f"  -> state={final.state}, levels_completed={final.levels_completed}, "
               f"actions={agent.action_counter}")
 
     sc = arc.get_scorecard()

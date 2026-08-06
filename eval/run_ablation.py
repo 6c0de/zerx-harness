@@ -31,10 +31,16 @@ _CONFIG_ENV_MAP = {
     "memory_on": "ZERX_MEMORY_ON",
     "memory_refresh_interval": "ZERX_MEMORY_REFRESH_INTERVAL",
     "arbiter_on": "ZERX_ARBITER_ON",
+    "opening_probe_on": "ZERX_OPENING_PROBE_ON",
+    "opening_probe_actions": "ZERX_OPENING_PROBE_ACTIONS",
+    "max_actions": "ZERX_MAX_ACTIONS",
+    "max_wall_seconds": "ZERX_MAX_WALL_SECONDS",
     "budget_soft_cap": "ZERX_BUDGET_SOFT_CAP",
     "model_revision": "ZERX_MODEL_REVISION",
     "backend": "ZERX_BACKEND",
     "platform": "ZERX_PLATFORM",
+    "competition_mode": "ZERX_COMPETITION_MODE",
+    "internet_enabled": "ZERX_INTERNET_ENABLED",
     "exact_state_suppression_on": "ZERX_EXACT_STATE_SUPPRESSION_ON",
     "duck_objects_on": "ZERX_DUCK_OBJECTS_ON",
     "candidate_count": "ZERX_CANDIDATE_COUNT",
@@ -116,10 +122,14 @@ def run_games(
         for field_name, env_name in _CONFIG_ENV_MAP.items():
             os.environ[env_name] = str(getattr(config, field_name))
 
+        # `max_steps` overrides whatever `config.max_actions` says, via the
+        # same env channel MyAgent.__init__ reads. The previous
+        # `min(MyAgentCls.MAX_ACTIONS, max_steps)` form could only lower the
+        # cap below the inherited 80, so `max_steps=200` silently ran 80.
+        os.environ["ZERX_MAX_ACTIONS"] = str(max_steps)
+
         arc = arc_agi.Arcade(operation_mode=OperationMode.NORMAL)
         MyAgentCls = _load_my_agent_class()
-        if hasattr(MyAgentCls, "MAX_ACTIONS"):
-            MyAgentCls.MAX_ACTIONS = min(MyAgentCls.MAX_ACTIONS, max_steps)
 
         played: List[tuple] = []
         for game_id in game_ids:

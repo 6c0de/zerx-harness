@@ -101,10 +101,13 @@ def test_build_writes_zerx_files_before_agent_cell_and_copies_zerx_in_run_cell()
     assert zerx_cell_indices, "expected at least one %%writefile /tmp/zerx/... cell"
     assert max(zerx_cell_indices) < agent_cell_index
 
+    # Several cells are now gated on KAGGLE_IS_COMPETITION_RERUN (offline
+    # vLLM install, model serving, then this one) -- select the run cell by
+    # what only it does, not by the shared guard.
     run_cell_source = next(
         cell["source"]
         for cell in cells
-        if cell["cell_type"] == "code" and "KAGGLE_IS_COMPETITION_RERUN" in cell["source"]
+        if cell["cell_type"] == "code" and "main.py --agent myagent" in cell["source"]
     )
     assert "cp -r /tmp/zerx" in run_cell_source
     assert "/kaggle/working/ARC-AGI-3-Agents/zerx" in run_cell_source

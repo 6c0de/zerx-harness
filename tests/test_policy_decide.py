@@ -4,8 +4,24 @@ from zerx.heuristics import ClickCandidate, DeadSignatureTracker
 from zerx.memory import MemoryState
 from zerx.model_backend import FakeModelBackend
 from zerx.perception import LabeledObject, PerceptionResult
-from zerx.policy import build_prompt, decide
+from zerx.policy import _deterministic_fallback, build_prompt, decide
 from zerx.types import Action, ActionName, GameFrame
+
+
+def _config(**kwargs):
+    """Config for tests that exercise the model/heuristic/fallback paths.
+
+    `Config.opening_probe_on` defaults to True in production: the first few
+    actions of a real game deliberately go to a model-free probe that tries
+    each legal action once, so the evidence table is filled in before the
+    model's first real decision (zerx/policy._opening_probe). These tests
+    are about what happens *after* that phase, so they opt out of it rather
+    than having to fabricate a probe history for every case. Tests that
+    cover the probe itself construct `Config` directly.
+    """
+    kwargs.setdefault("opening_probe_on", False)
+    return Config(**kwargs)
+
 
 LEGAL = frozenset(
     {
@@ -35,7 +51,7 @@ def test_decide_returns_reset_when_game_over():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=[]),
         actions_taken=0,
     )
@@ -49,7 +65,7 @@ def test_decide_uses_model_action_when_valid():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
         actions_taken=0,
     )
@@ -65,7 +81,7 @@ def test_decide_repairs_markdown_fenced_model_output():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=[raw]),
         actions_taken=0,
     )
@@ -80,7 +96,7 @@ def test_decide_falls_back_to_heuristic_when_model_output_invalid():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=["garbage, not json"]),
         actions_taken=0,
     )
@@ -94,7 +110,7 @@ def test_decide_falls_back_to_deterministic_when_no_candidates_and_model_invalid
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=["garbage, not json"]),
         actions_taken=0,
     )
@@ -110,7 +126,7 @@ def test_decide_heuristic_first_skips_model_call_when_confident():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(heuristic_first=True, heuristic_confidence_threshold=0.0),
+        config=_config(heuristic_first=True, heuristic_confidence_threshold=0.0),
         backend=backend,
         actions_taken=0,
     )
@@ -124,7 +140,7 @@ def test_decide_never_raises_when_backend_raises():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=[]),  # raises RuntimeError internally
         actions_taken=0,
     )
@@ -137,7 +153,7 @@ def test_decide_records_budget_signal():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(budget_soft_cap=50),
+        config=_config(budget_soft_cap=50),
         backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
         actions_taken=12,
     )
@@ -151,7 +167,7 @@ def test_decide_memory_refreshes_when_on_and_due():
         history=(),
         memory=memory,
         dead_signatures=DeadSignatureTracker(),
-        config=Config(memory_on=True, memory_refresh_interval=9),
+        config=_config(memory_on=True, memory_refresh_interval=9),
         backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
         actions_taken=0,
     )
@@ -166,7 +182,7 @@ def test_decide_memory_untouched_when_off():
         history=(),
         memory=memory,
         dead_signatures=DeadSignatureTracker(),
-        config=Config(memory_on=False),
+        config=_config(memory_on=False),
         backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
         actions_taken=0,
     )
@@ -180,7 +196,7 @@ def test_decide_random_fallback_stays_within_legal_actions_and_never_raises():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=["garbage"]),
         actions_taken=0,
     )
@@ -196,7 +212,7 @@ def test_decide_records_target_object_label_on_heuristic_source():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(heuristic_first=True, heuristic_confidence_threshold=0.0),
+        config=_config(heuristic_first=True, heuristic_confidence_threshold=0.0),
         backend=backend,
         actions_taken=0,
     )
@@ -210,7 +226,7 @@ def test_decide_leaves_target_object_label_none_on_model_source():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
         actions_taken=0,
     )
@@ -307,7 +323,7 @@ def test_decide_budget_favoring_execution_triggers_heuristic_even_when_heuristic
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(heuristic_first=False, budget_soft_cap=50),
+        config=_config(heuristic_first=False, budget_soft_cap=50),
         backend=backend,
         actions_taken=45,
     )
@@ -327,7 +343,7 @@ def test_decide_budget_favoring_execution_without_candidates_falls_through_uncha
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(heuristic_first=False, budget_soft_cap=50),
+        config=_config(heuristic_first=False, budget_soft_cap=50),
         backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
         actions_taken=45,
     )
@@ -343,7 +359,7 @@ def test_decide_model_prompt_includes_ranked_click_candidates():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=backend,
         actions_taken=0,
     )
@@ -357,7 +373,7 @@ def test_decide_multi_candidate_calls_backend_candidate_count_times():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(candidate_count=3),
+        config=_config(candidate_count=3),
         backend=backend,
         actions_taken=0,
     )
@@ -370,7 +386,7 @@ def test_decide_multi_candidate_uses_model_source_when_a_candidate_parses():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(candidate_count=2),
+        config=_config(candidate_count=2),
         backend=FakeModelBackend(
             responses=['{"action": "ACTION5"}', '{"action": "ACTION1"}']
         ),
@@ -386,7 +402,7 @@ def test_decide_multi_candidate_falls_back_when_all_candidates_unparseable():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(candidate_count=2),
+        config=_config(candidate_count=2),
         backend=FakeModelBackend(responses=["garbage", "also garbage"]),
         actions_taken=0,
     )
@@ -400,7 +416,7 @@ def test_decide_multi_candidate_prefers_higher_scored_non_reset_candidate():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(candidate_count=2),
+        config=_config(candidate_count=2),
         backend=FakeModelBackend(
             responses=['{"action": "RESET"}', '{"action": "ACTION1"}']
         ),
@@ -421,7 +437,7 @@ def test_decide_default_candidate_count_still_calls_backend_exactly_once():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=backend,
         actions_taken=0,
     )
@@ -434,7 +450,7 @@ def test_decide_populates_raw_response_on_successful_model_action():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
         actions_taken=0,
     )
@@ -448,7 +464,7 @@ def test_decide_populates_raw_response_even_when_parse_fails():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=['{"action": "ACTION0"}']),  # invalid name
         actions_taken=0,
     )
@@ -462,7 +478,7 @@ def test_decide_raw_response_is_none_when_no_model_call_happens():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=[]),
         actions_taken=0,
     )
@@ -490,7 +506,7 @@ def test_decide_populates_model_error_when_backend_raises():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=_RaisingBackend(RuntimeError("boom")),
         actions_taken=0,
     )
@@ -505,7 +521,7 @@ def test_decide_model_error_populated_on_fallback_heuristic_path_too():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=_RaisingBackend(ConnectionError("network down")),
         actions_taken=0,
     )
@@ -519,7 +535,7 @@ def test_decide_model_error_is_none_when_model_call_succeeds():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
         actions_taken=0,
     )
@@ -532,8 +548,49 @@ def test_decide_model_error_is_none_when_no_model_call_happens():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(),
+        config=_config(),
         backend=FakeModelBackend(responses=[]),
         actions_taken=0,
     )
     assert decision.model_error is None
+
+
+def test_deterministic_fallback_rotates_instead_of_repeating_one_action():
+    """Regression: the deterministic fallback always returned the single
+    highest-preference legal action, so a game with no reachable model and
+    no click candidates (ls20 never has ACTION6 legal) emitted the identical
+    action every step -- 121 consecutive ACTION1s in a real local run, which
+    cannot leave the start state and gathers no evidence at all.
+    """
+    legal = frozenset({ActionName.ACTION1, ActionName.ACTION2, ActionName.ACTION5})
+    backend = FakeModelBackend(responses=[])  # every generate() raises
+
+    seen = []
+    for step in range(9):
+        decision, _ = decide(
+            frame=_blank_frame(legal=legal),  # no objects -> no candidates
+            history=(),
+            memory=MemoryState(),
+            dead_signatures=DeadSignatureTracker(),
+            config=_config(),
+            backend=backend,
+            actions_taken=step,
+        )
+        assert decision.source == "fallback_deterministic"
+        assert decision.action.name in legal
+        seen.append(decision.action.name)
+
+    assert len(set(seen)) == 3, f"fallback never diversified: {seen}"
+    # Deterministic, not random: the same actions_taken gives the same action.
+    assert seen[0] == seen[3] == seen[6]
+
+
+def test_deterministic_fallback_is_stable_for_a_single_legal_action():
+    legal = frozenset({ActionName.ACTION1})
+    for step in (0, 1, 7, 100):
+        assert _deterministic_fallback(legal, actions_taken=step).name == ActionName.ACTION1
+
+
+def test_deterministic_fallback_resets_when_only_reset_is_legal():
+    action = _deterministic_fallback(frozenset({ActionName.RESET}), actions_taken=5)
+    assert action is not None and action.name == ActionName.RESET

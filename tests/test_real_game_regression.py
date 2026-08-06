@@ -30,6 +30,22 @@ from zerx.perception import perceive  # noqa: E402
 from zerx.policy import decide  # noqa: E402
 from zerx.types import ActionName  # noqa: E402
 
+
+def _config(**kwargs):
+    """Config for tests that exercise the model/heuristic/fallback paths.
+
+    `Config.opening_probe_on` defaults to True in production: the first few
+    actions of a real game deliberately go to a model-free probe that tries
+    each legal action once, so the evidence table is filled in before the
+    model's first real decision (zerx/policy._opening_probe). These tests
+    are about what happens *after* that phase, so they opt out of it rather
+    than having to fabricate a probe history for every case. Tests that
+    cover the probe itself construct `Config` directly.
+    """
+    kwargs.setdefault("opening_probe_on", False)
+    return Config(**kwargs)
+
+
 ALL_PUBLIC_GAME_IDS = [
     "su15", "sb26", "ft09", "cd82", "sk48", "tr87", "sc25", "ls20", "g50t",
     "bp35", "lf52", "m0r0", "vc33", "tn36", "r11l", "dc22", "sp80", "ka59",
@@ -130,7 +146,7 @@ def test_ls20_fallback_loop_is_fully_explained_by_missing_backend(arcade):
     for _ in range(20):
         decision, memory = decide(
             frame=frame, history=(), memory=memory,
-            dead_signatures=dead_signatures, config=Config(),
+            dead_signatures=dead_signatures, config=_config(),
             backend=backend, actions_taken=0,
         )
         actions.add(decision.action.name)
@@ -162,7 +178,7 @@ def test_vc33_fallback_loop_never_diversifies_when_transitions_report_effective(
     for _ in range(20):
         decision, memory = decide(
             frame=frame, history=(), memory=memory,
-            dead_signatures=dead_signatures, config=Config(),
+            dead_signatures=dead_signatures, config=_config(),
             backend=backend, actions_taken=0,
         )
         assert decision.action.name == ActionName.ACTION6

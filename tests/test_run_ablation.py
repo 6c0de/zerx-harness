@@ -94,3 +94,52 @@ def test_run_games_restores_env_vars():
             assert os.environ["ZERX_BACKEND"] == backend_before
     finally:
         del os.environ["ZERX_UNRELATED_TEST_VAR"]
+
+
+def test_every_ablation_flag_is_actually_read_somewhere():
+    """ARC-HANDOFF-003: four flags reached the ablation matrix while
+    controlling nothing, so any A/B on them was guaranteed to report "no
+    effect" -- which risks discarding good ideas for the wrong reason.
+    """
+    import pathlib
+
+    from eval.run_ablation import _CONFIG_ENV_MAP
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    sources = "\n".join(
+        path.read_text()
+        for directory in ("zerx", "agent")
+        for path in sorted((root / directory).rglob("*.py"))
+    )
+    # config.py only defines the fields; a flag mentioned nowhere else is a
+    # flag nothing acts on.
+    definitions = (root / "zerx" / "config.py").read_text()
+    consumers = sources.replace(definitions, "")
+
+    # Fields that legitimately have no consumer outside config.py itself.
+    # Each needs a reason; anything else in the matrix must change behavior.
+    NON_BEHAVIORAL = {
+        "experiment_id": "metadata recorded in ExperimentRecord, not a behavior flag",
+        "competition_mode": "validation-only: arms the cerebras_dev lockout in __post_init__",
+        "internet_enabled": "validation-only: arms the cerebras_dev lockout in __post_init__",
+    }
+
+    unread = [
+        name
+        for name in _CONFIG_ENV_MAP
+        if name not in NON_BEHAVIORAL
+        and f"config.{name}" not in consumers
+        and f"_config.{name}" not in consumers
+    ]
+    assert unread == [], f"flags in the ablation matrix that nothing reads: {unread}"
+
+    # The lockout fields must really be enforced, not just excused above.
+    from zerx.config import Config
+
+    for field in ("competition_mode", "internet_enabled"):
+        value = False if field == "internet_enabled" else True
+        try:
+            Config(backend="cerebras_dev", **{field: value})
+        except ValueError:
+            continue
+        raise AssertionError(f"{field} is excused as validation-only but enforces nothing")
