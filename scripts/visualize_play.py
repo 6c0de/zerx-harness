@@ -33,10 +33,19 @@ if str(VENDOR) not in sys.path:
 
 from zerx.trace import CompositeTraceRecorder, JsonlTraceWriter, TraceMeta, TraceStep  # noqa: E402
 
+# Official ARC-AGI-3 16-color palette (indices 0-15), sourced from the
+# arc_agi package's own rendering table
+# (.venv/Lib/site-packages/arc_agi/rendering.py's COLOR_MAP, hex -> RGB) --
+# NOT the classic 10-color ARC-AGI-1/2 puzzle palette. Real game grids use
+# indices up to 15; confirmed against a real cerebras_dev trace that the
+# earlier 0-9 table silently mis-colored most of a frame (index 4, the
+# dominant cell value in that trace, is officially "Off Black" #333333,
+# not yellow).
 _PALETTE = {
-    0: (0, 0, 0), 1: (0, 116, 217), 2: (255, 65, 54), 3: (46, 204, 64),
-    4: (255, 220, 0), 5: (170, 170, 170), 6: (240, 18, 190), 7: (255, 133, 27),
-    8: (127, 219, 255), 9: (135, 12, 37),
+    0: (255, 255, 255), 1: (204, 204, 204), 2: (153, 153, 153), 3: (102, 102, 102),
+    4: (51, 51, 51), 5: (0, 0, 0), 6: (229, 58, 163), 7: (255, 123, 204),
+    8: (249, 60, 49), 9: (30, 147, 255), 10: (136, 216, 241), 11: (255, 220, 0),
+    12: (255, 133, 27), 13: (146, 18, 49), 14: (79, 204, 48), 15: (163, 86, 214),
 }
 _DEFAULT_COLOR = (85, 85, 85)
 _CELL_PX = 10

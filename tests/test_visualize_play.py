@@ -9,6 +9,7 @@ if str(ROOT / "scripts") not in sys.path:
 
 import visualize_play  # noqa: E402
 from visualize_play import (  # noqa: E402
+    _DEFAULT_COLOR,
     _clamp_index,
     _clamp_scroll,
     _color_for,
@@ -21,15 +22,32 @@ from zerx.types import Action, ActionName, GameFrame
 
 
 def test_color_for_returns_a_distinct_rgb_tuple_per_known_color_index():
-    colors = {_color_for(i) for i in range(10)}
-    assert len(colors) == 10
+    colors = {_color_for(i) for i in range(16)}
+    assert len(colors) == 16
     for color in colors:
         assert len(color) == 3
         assert all(0 <= channel <= 255 for channel in color)
 
 
-def test_color_for_falls_back_to_a_default_for_out_of_range_index():
-    assert _color_for(99) == _color_for(99)  # deterministic, doesn't raise
+def test_color_for_matches_the_official_arc_agi_3_16_color_palette():
+    # Values sourced from the arc_agi package's own rendering table
+    # (.venv/Lib/site-packages/arc_agi/rendering.py's COLOR_MAP, hex ->
+    # RGB) -- NOT the classic 10-color ARC-AGI-1/2 puzzle palette. Real
+    # game grids use indices up to 15; a hardcoded 0-9 table silently
+    # mis-colors most of a frame (confirmed against a real cerebras_dev
+    # trace: index 4 is the dominant cell value and is "Off Black"
+    # (#333333) officially, not yellow).
+    assert _color_for(0) == (255, 255, 255)  # White
+    assert _color_for(4) == (51, 51, 51)  # Off Black
+    assert _color_for(5) == (0, 0, 0)  # Black
+    assert _color_for(9) == (30, 147, 255)  # Blue
+    assert _color_for(11) == (255, 220, 0)  # Yellow
+    assert _color_for(15) == (163, 86, 214)  # Purple
+
+
+def test_color_for_falls_back_to_default_for_index_beyond_the_16_color_range():
+    assert _color_for(16) == _DEFAULT_COLOR
+    assert _color_for(99) == _DEFAULT_COLOR
 
 
 def test_clamp_index_stays_within_bounds():
