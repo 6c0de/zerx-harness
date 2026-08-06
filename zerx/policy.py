@@ -150,6 +150,64 @@ def _deterministic_fallback(
     return None
 
 
+def _unprobed_actions(
+    legal_actions: FrozenSet[ActionName],
+    recent_transitions: Sequence[TransitionRecord],
+) -> Tuple[ActionName, ...]:
+    """Legal non-RESET actions whose effect has never been observed.
+
+    Derived from the transition records rather than from any new mutable
+    state, which is what keeps `decide()` a pure function.
+    """
+    tried = {record.action.name for record in recent_transitions}
+    return tuple(
+        name
+        for name in _FALLBACK_PREFERENCE
+        if name in legal_actions and name not in tried
+    )
+
+
+def _opening_probe(
+    legal_actions: FrozenSet[ActionName],
+    recent_transitions: Sequence[TransitionRecord],
+    candidates: Sequence[ClickCandidate],
+    actions_taken: int,
+    probe_actions: int,
+) -> Optional[Tuple[Action, Optional[str]]]:
+    """Spend the first few actions establishing what each action *does*.
+
+    The central problem in ARC-AGI-3 is discovering a game's control scheme,
+    and `build_prompt` deliberately never describes what ACTION1-ACTION5 mean
+    (AGENTS.md forbids hard-coding semantics that vary per game). So on the
+    opening moves the model is being asked to *guess* the controls, and every
+    guess it gets wrong costs an action anyway.
+
+    Trying each legal action exactly once instead is strictly cheaper: it
+    costs at most one action per action-name, needs no model call at all, and
+    hands the model a filled-in evidence table (see
+    `zerx/transitions.render_transition_history`) before its first real
+    decision. Returns (action, target_object_label) or None once every legal
+    action has been observed or the probe budget is spent.
+
+    ACTION6 is last in `_FALLBACK_PREFERENCE`, so it is only probed once
+    everything else has been; it is probed at the top-ranked click candidate
+    rather than a blind coordinate, and skipped entirely when there is no
+    candidate — one arbitrary click out of 4096 teaches nothing.
+    """
+    if probe_actions <= 0 or actions_taken >= probe_actions:
+        return None
+    unprobed = _unprobed_actions(legal_actions, recent_transitions)
+    if not unprobed:
+        return None
+    name = unprobed[0]
+    if name == ActionName.ACTION6:
+        if not candidates:
+            return None
+        top = candidates[0]
+        return Action(name=name, x=top.x, y=top.y), top.object_label
+    return Action(name=name), None
+
+
 def _random_fallback(legal_actions: FrozenSet[ActionName], grid_size: int = 64) -> Action:
     name = random.choice(tuple(legal_actions))
     if name == ActionName.ACTION6:
@@ -308,6 +366,29 @@ def decide(
             summarizer=lambda prev, ctx: summarize_transitions(recent_transitions) or prev,
             refresh_interval=config.memory_refresh_interval,
         )
+
+    # Information before exploitation: the probe runs ahead of both the
+    # heuristic and the model, because on the opening moves neither of them
+    # knows what any action does yet.
+    if config.opening_probe_on:
+        probe = _opening_probe(
+            legal_actions,
+            recent_transitions,
+            candidates,
+            actions_taken,
+            config.opening_probe_actions,
+        )
+        if probe is not None:
+            probe_action, probe_label = probe
+            return (
+                Decision(
+                    action=probe_action,
+                    source="probe",
+                    budget=budget,
+                    target_object_label=probe_label,
+                ),
+                new_memory,
+            )
 
     if heuristic_action is not None:
         return (

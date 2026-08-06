@@ -31,6 +31,8 @@ _CONFIG_ENV_MAP = {
     "memory_on": "ZERX_MEMORY_ON",
     "memory_refresh_interval": "ZERX_MEMORY_REFRESH_INTERVAL",
     "arbiter_on": "ZERX_ARBITER_ON",
+    "opening_probe_on": "ZERX_OPENING_PROBE_ON",
+    "opening_probe_actions": "ZERX_OPENING_PROBE_ACTIONS",
     "max_actions": "ZERX_MAX_ACTIONS",
     "max_wall_seconds": "ZERX_MAX_WALL_SECONDS",
     "budget_soft_cap": "ZERX_BUDGET_SOFT_CAP",

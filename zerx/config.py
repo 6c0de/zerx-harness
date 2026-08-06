@@ -67,6 +67,17 @@ class Config:
     memory_on: bool = True
     memory_refresh_interval: int = 10
     arbiter_on: bool = False
+    opening_probe_on: bool = True  # spend the opening actions trying each
+    # legal action once, with no model call, so the evidence table the model
+    # reads is already filled in before its first real decision. Unusually
+    # for this project this defaults ON: discovering the control scheme is
+    # the central task, the probe costs at most one action per action-name,
+    # and without it the model spends those same actions guessing. Still
+    # fully ablatable via ZERX_OPENING_PROBE_ON=false.
+    opening_probe_actions: int = 12  # bound on the probe phase, counted in
+    # actions taken. Large enough for all six action names plus the opening
+    # RESET and some slack; small enough that a mid-game change in the legal
+    # set cannot restart probing late in a run.
     max_actions: int = 400  # per-game action cap. The vendored
     # `agents.agent.Agent` base class hardcodes MAX_ACTIONS = 80 purely as a
     # "don't loop forever" guard, and MyAgent inherited it, so every Kaggle
@@ -118,6 +129,8 @@ class Config:
             raise ValueError("budget_soft_cap must be positive")
         if self.candidate_count < 1:
             raise ValueError("candidate_count must be >= 1")
+        if self.opening_probe_actions < 0:
+            raise ValueError("opening_probe_actions must be >= 0")
         if self.max_actions < 1:
             raise ValueError("max_actions must be >= 1")
         if self.max_wall_seconds < 0:
@@ -154,6 +167,12 @@ class Config:
                 env, "ZERX_MEMORY_REFRESH_INTERVAL", cls.memory_refresh_interval
             ),
             arbiter_on=_env_bool(env, "ZERX_ARBITER_ON", cls.arbiter_on),
+            opening_probe_on=_env_bool(
+                env, "ZERX_OPENING_PROBE_ON", cls.opening_probe_on
+            ),
+            opening_probe_actions=_env_int(
+                env, "ZERX_OPENING_PROBE_ACTIONS", cls.opening_probe_actions
+            ),
             max_actions=_env_int(env, "ZERX_MAX_ACTIONS", cls.max_actions),
             max_wall_seconds=_env_int(env, "ZERX_MAX_WALL_SECONDS", cls.max_wall_seconds),
             budget_soft_cap=_env_int(env, "ZERX_BUDGET_SOFT_CAP", cls.budget_soft_cap),

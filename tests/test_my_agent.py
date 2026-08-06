@@ -270,7 +270,7 @@ def test_trace_recorder_exception_does_not_desync_agent_state():
     assert agent._actions_taken == 2
 
 
-def test_choose_action_logs_a_warning_when_the_model_backend_raises(caplog):
+def test_choose_action_logs_a_warning_when_the_model_backend_raises(caplog, monkeypatch):
     """A model backend failure (auth, network, ...) was previously
     completely silent -- decide() swallowed the exception with no logging
     anywhere, so a real run could fall back on every single step with zero
@@ -279,6 +279,9 @@ def test_choose_action_logs_a_warning_when_the_model_backend_raises(caplog):
     agent/my_agent.py actually surfaces it to the console, not just the
     trace file, so a human watching a live run sees it in real time.
     """
+    # The opening probe deliberately makes no model call at all, so opt out
+    # to reach the model path on the first call (zerx/policy._opening_probe).
+    monkeypatch.setenv("ZERX_OPENING_PROBE_ON", "false")
     agent = _make_agent()
 
     class _RaisingBackend:

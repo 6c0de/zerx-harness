@@ -22,6 +22,22 @@ from zerx.transitions import (
 )
 from zerx.types import Action, ActionName, GameFrame
 
+
+def _config(**kwargs):
+    """Config for tests that exercise the model/heuristic/fallback paths.
+
+    `Config.opening_probe_on` defaults to True in production: the first few
+    actions of a real game deliberately go to a model-free probe that tries
+    each legal action once, so the evidence table is filled in before the
+    model's first real decision (zerx/policy._opening_probe). These tests
+    are about what happens *after* that phase, so they opt out of it rather
+    than having to fabricate a probe history for every case. Tests that
+    cover the probe itself construct `Config` directly.
+    """
+    kwargs.setdefault("opening_probe_on", False)
+    return Config(**kwargs)
+
+
 LEGAL = frozenset({ActionName.ACTION1, ActionName.ACTION5, ActionName.ACTION6})
 
 
@@ -135,7 +151,7 @@ def test_memory_on_actually_reaches_the_prompt_now():
     records = [_record(Action(name=ActionName.ACTION1)) for _ in range(3)]
     memory = MemoryState()
     backend = FakeModelBackend(responses=['{"action": "ACTION1"}'] * 3)
-    config = Config(memory_refresh_interval=1)
+    config = _config(memory_refresh_interval=1)
 
     for step in range(3):
         _, memory = decide(
@@ -161,7 +177,7 @@ def test_memory_off_leaves_the_summary_empty():
         history=(),
         memory=MemoryState(),
         dead_signatures=DeadSignatureTracker(),
-        config=Config(memory_on=False, memory_refresh_interval=1),
+        config=_config(memory_on=False, memory_refresh_interval=1),
         backend=FakeModelBackend(responses=['{"action": "ACTION1"}']),
         actions_taken=0,
         recent_transitions=[_record(Action(name=ActionName.ACTION1))],

@@ -21,6 +21,11 @@ from agent.my_agent import MyAgent  # noqa: E402
 
 
 def _make_agent(monkeypatch, suppression_on: bool, heuristic_first: bool = False) -> MyAgent:
+    # These cases are about what happens after the opening probe phase (a
+    # real game spends its first few actions trying each legal action once,
+    # model-free -- zerx/policy._opening_probe). Opt out so the suppression
+    # and fallback behaviour under test is reachable on call 1.
+    monkeypatch.setenv("ZERX_OPENING_PROBE_ON", "false")
     if heuristic_first:
         # Any candidate counts as confident, so the heuristic path proposes
         # the same ACTION6 click every step for an unchanging frame.
