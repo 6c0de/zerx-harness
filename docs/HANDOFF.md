@@ -561,17 +561,32 @@ pre-existing, unrelated `PytestUnknownMarkWarning` for
 `pytest.mark.slow_local_engine`, same warning noted in the
 `baseline-120-reki-core` integration above).
 
-**Deferred:** 10 Minor findings surfaced across this branch's per-task
-code reviews (8 from Task 5's `scripts/visualize_play.py` review round —
-composite-recorder ordering on quit, `--history-cap 0` crashing, argparse
-gaps, `_run_replay` touching recorder privates, the replay window being
-mis-captioned "live", meta being discarded in replay, a zero-step trace
-opening a blank window, a missing `VENDOR.exists()` guard — plus 2 more
-from elsewhere in the branch) were intentionally left unfixed, per each
-task's explicit instruction to defer Minor findings to a final
-whole-branch review rather than fix them piecemeal. They are not
-itemized here — triaging and deciding which to fix is the final
-reviewer's job, not recorded as a checklist in this status entry.
+**Deferred:** 14 Minor findings surfaced across this branch's per-task
+code reviews, intentionally left unfixed, per each task's explicit
+instruction to defer Minor findings to a final whole-branch review
+rather than fix them piecemeal. Breakdown by task (full per-finding
+descriptions live in this branch's SDD ledger,
+`.superpowers/sdd/2026-08-06-baseline-120-followups/progress.md` —
+gitignored, not source of truth, see "Uncommitted or external artifacts"
+below — and in the individual task review reports):
+- Task 2 (`zerx/trace.py`): 2 — `JsonlTraceWriter` untested without a
+  `write_meta` call; nested-directory `mkdir` untested.
+- Task 4 (config/agent wiring): 2 — no test for trace fidelity under the
+  exact-state-suppression override; the new trace-recording block lacks
+  a banner-comment pair unlike its neighboring config-gated blocks.
+- Task 5 (`scripts/visualize_play.py`): 10 — 8 from the original review
+  round (composite-recorder ordering on quit, `--history-cap 0`
+  crashing, argparse gaps, `_run_replay` touching recorder privates, the
+  replay window mis-captioned "live", meta discarded in replay, a
+  zero-step trace opening a blank window, a missing `VENDOR.exists()`
+  guard) plus 2 more surfaced by the fix-round re-review (SPACE-after-
+  run-end can re-close the live window as an edge case;
+  `_wrap_reasoning`'s "... (N more lines)" indicator isn't
+  width-bounded).
+
+They are not itemized beyond this per-task breakdown — triaging and
+deciding which to fix is the final reviewer's job, not a checklist to be
+resolved in this status entry.
 
 ## Uncommitted or external artifacts
 
