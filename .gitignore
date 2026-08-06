@@ -26,3 +26,4 @@ traces/
 .DS_Store
 .idea/
 .vscode/
+notebooks/model-smoke/model-smoke.ipynb
