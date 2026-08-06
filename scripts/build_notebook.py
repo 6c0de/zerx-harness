@@ -186,10 +186,17 @@ READINESS_GATE_SOURCE = dedent(
     # allocates the same shape a --accelerator push does. If it differs, this
     # line is what makes the result diagnosable rather than merely
     # disappointing.
-    print("GPU:", subprocess.run(
-        ["nvidia-smi", "--query-gpu=name,memory.total,compute_cap",
-         "--format=csv,noheader"],
-        capture_output=True, text=True).stdout.strip(), flush=True)
+    try:
+        gpu = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,compute_cap",
+             "--format=csv,noheader"],
+            capture_output=True, text=True).stdout.strip()
+    except FileNotFoundError:
+        # No nvidia-smi at all means no GPU was attached. Say so plainly
+        # instead of dying here with a FileNotFoundError traceback that looks
+        # like a bug in the gate rather than a misconfigured kernel.
+        gpu = "NOT FOUND -- nvidia-smi is absent, so this kernel has no GPU"
+    print("GPU:", gpu, flush=True)
 
     from zerx.config import Config
     from zerx.model_backend import select_backend
