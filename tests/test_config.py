@@ -145,3 +145,17 @@ def test_gemma_base_url_defaults_to_local_vllm_endpoint():
 def test_from_env_overrides_gemma_base_url():
     cfg = Config.from_env({"ZERX_GEMMA_BASE_URL": "http://localhost:9000/v1/chat/completions"})
     assert cfg.gemma_base_url == "http://localhost:9000/v1/chat/completions"
+
+
+def test_trace_export_path_defaults_to_none():
+    assert Config().trace_export_path is None
+
+
+def test_trace_export_path_read_from_env():
+    config = Config.from_env({"ZERX_TRACE_EXPORT_PATH": "traces/foo.jsonl"})
+    assert config.trace_export_path == "traces/foo.jsonl"
+
+
+def test_trace_export_path_absent_from_env_stays_none():
+    config = Config.from_env({})
+    assert config.trace_export_path is None

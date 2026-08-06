@@ -32,6 +32,10 @@ def _env_str(env: Mapping[str, str], key: str, default: str) -> str:
     return env.get(key, default)
 
 
+def _env_optional_str(env: Mapping[str, str], key: str, default: Optional[str]) -> Optional[str]:
+    return env.get(key, default)
+
+
 @dataclass(frozen=True)
 class Config:
     experiment_id: str = "dev"
@@ -49,6 +53,9 @@ class Config:
     candidate_count: int = 1
     structured_memory_on: bool = False
     gemma_base_url: str = "http://localhost:8000/v1/chat/completions"
+    trace_export_path: Optional[str] = None  # dev-only: when set, MyAgent
+    # writes one JSONL trace file per game via zerx/trace.py -- off by
+    # default, never read outside agent/my_agent.py's construction.
 
     def __post_init__(self) -> None:
         if self.backend == "cerebras_dev" and self.platform == "kaggle":
@@ -90,6 +97,9 @@ class Config:
                 env, "ZERX_STRUCTURED_MEMORY_ON", cls.structured_memory_on
             ),
             gemma_base_url=_env_str(env, "ZERX_GEMMA_BASE_URL", cls.gemma_base_url),
+            trace_export_path=_env_optional_str(
+                env, "ZERX_TRACE_EXPORT_PATH", cls.trace_export_path
+            ),
         )
 
     def to_json(self) -> str:
