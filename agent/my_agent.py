@@ -32,6 +32,7 @@ from zerx.memory import MemoryState, StructuredMemoryState, maybe_refresh_struct
 from zerx.model_backend import select_backend
 from zerx.perception import perceive
 from zerx.policy import Decision, _FALLBACK_PREFERENCE, decide
+from zerx.trace import TraceRecorder, JsonlTraceWriter, build_trace_step
 from zerx.transitions import TransitionLedger, grid_hash
 from zerx.types import Action, ActionName, GameFrame
 
@@ -162,6 +163,11 @@ class MyAgent(Agent):
         # --- baseline-130-hypothesis (feat/baseline-130-hypothesis-memory) ---
         self._structured_memory = StructuredMemoryState()
         # --- end baseline-130-hypothesis ---
+        self.trace_recorder: Optional[TraceRecorder] = (
+            JsonlTraceWriter(self._config.trace_export_path)
+            if self._config.trace_export_path
+            else None
+        )
 
     def is_done(self, frames: List[FrameData], latest_frame: FrameData) -> bool:
         # Stop once we win. Don't stop on GAME_OVER — we want to RESET and
@@ -256,6 +262,18 @@ class MyAgent(Agent):
                 # this exact state -- leave `decision` unchanged rather than
                 # invent an unvalidated move (project fallback philosophy).
         # --- end baseline-115-exact-state-memory ---
+
+        if self.trace_recorder is not None:
+            self.trace_recorder.record(
+                build_trace_step(
+                    step_index=self._actions_taken,
+                    game_id=self.game_id,
+                    frame=frame,
+                    decision=decision,
+                    levels_completed=latest_frame.levels_completed,
+                    game_state=latest_frame.state.name,
+                )
+            )
 
         self._actions_taken += 1
 

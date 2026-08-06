@@ -172,3 +172,36 @@ def test_structured_memory_on_advances_step_count(monkeypatch):
     agent.choose_action([frame], frame)
 
     assert agent._structured_memory.step_count == 1
+
+
+def test_trace_recorder_is_none_by_default():
+    agent = _make_agent()
+    assert agent.trace_recorder is None
+
+
+def test_trace_recorder_records_once_per_choose_action_call_when_attached():
+    agent = _make_agent()
+
+    class _Spy:
+        def __init__(self):
+            self.steps = []
+
+        def record(self, step):
+            self.steps.append(step)
+
+    spy = _Spy()
+    agent.trace_recorder = spy
+
+    frame = FrameData(
+        frame=[[[0, 0], [0, 0]]],
+        state=GameState.NOT_FINISHED,
+        available_actions=[1, 2, 5],
+    )
+    agent.choose_action([frame], frame)
+    assert len(spy.steps) == 1
+    assert spy.steps[0].step_index == 0
+    assert spy.steps[0].game_id == agent.game_id
+
+    agent.choose_action([frame, frame], frame)
+    assert len(spy.steps) == 2
+    assert spy.steps[1].step_index == 1
