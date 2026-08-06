@@ -408,6 +408,51 @@ parallel tracks below (none of them touch Kaggle).
    tokens and latency per call, and a slightly larger JSON schema to
    parse/validate. Not started; no fix candidate written yet beyond this
    note.
+10. **`budget_soft_cap`'s default (50) silently turns the back half of a
+    100-step game into heuristic-only play, with no model call at all.**
+    Found 2026-08-06 while root-causing this session's real Colab run of
+    `integration/baseline-120-colab-ready` @ `4a1fda1` (8 games, 8-bit
+    fp8, legal-actions fix included): `aggregate_score: 0.0`, all 8 games
+    `NOT_FINISHED`, 0 levels completed, and — the actual tell — every
+    single game stopped at exactly 81 actions despite 8 different games.
+    `zerx/policy.py`'s `decide()`:
+    `budget_favors_execution = budget.should_favor_execution and top.score
+    > 0.0`, gated on nothing but `config.heuristic_first` being
+    irrelevant to it (`should_favor_execution` alone is enough) — once
+    `actions_taken / budget_soft_cap >= 0.8` (`zerx/budget.py`), any turn
+    with a scored click candidate skips the model call outright. At the
+    default `budget_soft_cap=50` that's action 40 — so roughly the last
+    half of every `MAX_STEPS_PER_GAME=100` game plays heuristic-only,
+    model untested for that portion. This is a distinct mechanism from
+    item 6 (the model was never even asked, not "asked and refused") and
+    was not caught by Track 4's original 8-game dev-lane sweep (which
+    used the pre-fix prompt, so item 6 dominated the symptom) or by
+    `feat/policy-prompt-legal-budget`'s own A/B evidence (which used a
+    25-step/game harness, short enough that `should_favor_execution`
+    never crossed threshold, so this mechanism never fired in that test).
+    Not itself proven to cause the `0.0` for the model-driven front half
+    of each game — no per-decision `source` was captured in that run, so
+    whether the front ~40 actions were genuinely `"model"` and simply
+    unsuccessful, or fell back for an unrelated reason, is undetermined
+    from that result alone.
+
+    **Fix applied, `fix/baseline-120-colab-diagnostics`:**
+    `scripts/build_colab_notebook.py`'s `smoke_game_cell` now sets
+    `ZERX_TRACE_EXPORT_PATH` (per-decision JSONL trace via
+    `zerx/trace.py`'s `JsonlTraceWriter`, already built and merged by
+    `feat/baseline-120-followups` but never wired into the Colab
+    notebook) and raises `ZERX_BUDGET_SOFT_CAP` to `1000` for this
+    diagnostic run only (a per-run env override, not a
+    `zerx/config.py` default change — the default stays `50`, this is
+    not claimed to be the right production value, just the right value
+    for isolating model behavior in one measurement) so the next Colab
+    run can actually attribute its result to the model instead of a mix
+    diluted by an unrelated budget policy. Also fixed the same
+    `MAX_ACTIONS` min-only cap bug as item 7 in this same cell (was
+    silently capping at 81 instead of the requested 100 — confirmed by
+    that same real run). `save_results_cell` now copies the trace
+    directory to Drive and records `budget_soft_cap`/`trace_dir` in the
+    saved result JSON. Not yet re-run — see "Exact next action".
 
 ## Parallel work split (Day 3, starting 2026-08-05)
 

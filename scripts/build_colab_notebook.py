@@ -306,6 +306,27 @@ def build() -> dict:
             os.environ["ZERX_BACKEND"] = "gemma_local"
             os.environ["ZERX_PLATFORM"] = "colab"
             os.environ["ZERX_MODEL_REVISION"] = "gemma-4-31b-it"
+            # Per-decision trace (source: model/heuristic/fallback_*, raw
+            # model response, model_error) -- MyAgent.__init__ wires this
+            # automatically off Config.trace_export_path (zerx/trace.py).
+            # A directory, not a file: JsonlTraceWriter auto-names
+            # <dir>/<game_id>-<timestamp>.jsonl per game (see its own
+            # docstring) since this cell constructs a fresh MyAgent per
+            # game in GAME_SAMPLE. Without this, a 0.0 result is
+            # unexplainable after the fact -- no visibility into whether
+            # the model was ever actually called successfully.
+            os.environ["ZERX_TRACE_EXPORT_PATH"] = "/content/traces/"
+            # Diagnostic-run-only override (not a default change): zerx/
+            # budget.py's should_favor_execution flips once actions_taken
+            # crosses 80% of budget_soft_cap (default 50) and, when true,
+            # zerx/policy.py's decide() skips the model call entirely in
+            # favor of the top heuristic click candidate. At the default
+            # cap that fires at action 40, silently turning the back half
+            # of every MAX_STEPS_PER_GAME=100 game into heuristic-only
+            # play. Raised well above MAX_STEPS_PER_GAME here so this run
+            # actually measures the model's behavior for the whole game,
+            # not a mix diluted by an unrelated budget policy.
+            os.environ["ZERX_BUDGET_SOFT_CAP"] = "1000"
 
             sys.path.insert(0, "")
             sys.path.insert(0, "vendor/ARC-AGI-3-Agents")
@@ -331,11 +352,16 @@ def build() -> dict:
             # Config.backend -- gemma_local already resolves correctly
             # either way (see docs/superpowers/plans/parallel-baseline-120/
             # README.md's "concrete, empirical finding").
+            # A plain min() against the vendored base Agent class's own
+            # MAX_ACTIONS (80) can only ever LOWER the cap, never raise it
+            # to the MAX_STEPS_PER_GAME actually requested here (known bug,
+            # docs/HANDOFF.md "Known failures or risks" item 7 -- confirmed
+            # by a real Colab run capping at 81, not the requested 100).
+            # This cell always wants exactly MAX_STEPS_PER_GAME, so set it
+            # directly instead of deferring to whatever the base class
+            # happens to default to.
             MyAgentCls = _load_my_agent_class()
-            MyAgentCls.MAX_ACTIONS = min(
-                getattr(MyAgentCls, "MAX_ACTIONS", MAX_STEPS_PER_GAME),
-                MAX_STEPS_PER_GAME,
-            )
+            MyAgentCls.MAX_ACTIONS = MAX_STEPS_PER_GAME
 
             arc = arc_agi.Arcade(operation_mode=OperationMode.NORMAL)
 
@@ -387,10 +413,23 @@ def build() -> dict:
         dedent(
             """\
             import json
+            import os
+            import shutil
             import subprocess
             from google.colab import drive
 
             drive.mount("/content/drive")
+
+            # Copy the per-decision trace files (see smoke_game_cell's
+            # ZERX_TRACE_EXPORT_PATH) off ephemeral Colab runtime storage
+            # before it's gone -- same reasoning as the result JSON below.
+            TRACE_SRC = "/content/traces"
+            TRACE_DST = "/content/drive/MyDrive/zerx-baseline-120-traces"
+            if os.path.isdir(TRACE_SRC):
+                shutil.copytree(TRACE_SRC, TRACE_DST, dirs_exist_ok=True)
+                print("Saved traces to:", TRACE_DST)
+            else:
+                print("No traces directory found at", TRACE_SRC)
 
             scorecard = arc.get_scorecard()
 
@@ -423,6 +462,8 @@ def build() -> dict:
                 "quantization": "fp8",
                 "game_sample": GAME_SAMPLE,
                 "max_steps_per_game": MAX_STEPS_PER_GAME,
+                "budget_soft_cap": os.environ.get("ZERX_BUDGET_SOFT_CAP"),
+                "trace_dir": TRACE_DST if os.path.isdir(TRACE_SRC) else None,
                 "per_game": per_game_full,
                 "aggregate_score": scorecard.score,
             }

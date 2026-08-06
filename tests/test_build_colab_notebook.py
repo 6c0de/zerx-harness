@@ -225,6 +225,47 @@ def test_smoke_game_cell_caps_steps_below_play_locals_default_for_colab_time_bud
     assert "MAX_STEPS_PER_GAME" in combined
 
 
+def test_smoke_game_cell_sets_max_actions_directly_not_via_min():
+    """`min(getattr(MyAgentCls, "MAX_ACTIONS", ...), MAX_STEPS_PER_GAME)` can
+    only ever LOWER the cap, never raise it above the vendored base Agent
+    class's own default (80) -- confirmed by a real Colab run capping at
+    81 actions/game instead of the requested 100 (docs/HANDOFF.md "Known
+    failures or risks" item 7). This cell always wants exactly
+    MAX_STEPS_PER_GAME, so it must be a direct assignment.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert "MyAgentCls.MAX_ACTIONS = MAX_STEPS_PER_GAME" in combined
+    assert 'getattr(MyAgentCls, "MAX_ACTIONS"' not in combined
+
+
+def test_smoke_game_cell_wires_trace_export_for_diagnosability():
+    """A 0.0 aggregate score with no exceptions is otherwise unexplainable
+    after the fact -- MyAgent.__init__ already wires a JsonlTraceWriter off
+    Config.trace_export_path (zerx/trace.py) whenever ZERX_TRACE_EXPORT_PATH
+    is set; this cell must actually set it, and save_results_cell must copy
+    the resulting trace files off ephemeral Colab storage the same way it
+    already does for the result JSON.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert 'os.environ["ZERX_TRACE_EXPORT_PATH"]' in combined
+    assert "shutil.copytree" in combined
+    assert "TRACE_DST" in combined
+
+
+def test_smoke_game_cell_raises_budget_soft_cap_for_this_diagnostic_run():
+    """zerx/budget.py's should_favor_execution flips at 80% of
+    budget_soft_cap (default 50, i.e. action 40) and zerx/policy.py's
+    decide() then skips the model call in favor of the top heuristic click
+    candidate -- silently turning the back half of every
+    MAX_STEPS_PER_GAME=100 game into heuristic-only play. This diagnostic
+    run needs the model exercised for the whole game, so the cap must be
+    raised well above MAX_STEPS_PER_GAME here (a per-run override, not a
+    zerx/config.py default change).
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert 'os.environ["ZERX_BUDGET_SOFT_CAP"]' in combined
+
+
 def test_smoke_game_cell_isolates_one_games_exception_from_the_rest():
     """A single game's unhandled exception must not lose the results
     already collected for earlier games in the sample -- each game is
