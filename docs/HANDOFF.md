@@ -346,6 +346,23 @@ owner to schedule:
    `integration/baseline-120` → `master` (locally) — safe to delete once
    the human owner confirms, not deleted automatically. Same standing
    offer for the 4 `feat/...` branches used for Day 3, already merged.
+8. **Resume/fork from a recorded step — documented, not built.** See
+   `docs/superpowers/specs/2026-08-06-baseline-120-followups-design.md`'s
+   "Future work: resume/fork from a recorded step" section for the full
+   mechanism (deterministically replay a saved trace's recorded actions
+   for steps `[0, N)` through the real engine's public step API, verify
+   the reached frame matches what was recorded, then hand off live
+   control to different code/config/backend/platform from step N
+   onward — for fine-tuning/debugging, same environment-split category as
+   `scripts/play_local.py`, never used during a scored Kaggle run). The
+   trace format (`zerx/trace.py`'s `TraceStep`/`TraceMeta`, now built and
+   merged on `feat/baseline-120-followups`) was deliberately designed to
+   support this without a breaking change — `TraceStep` already records
+   the ordered `action_name`/`action_x`/`action_y` for every step, and
+   `TraceMeta` already records `game_id`/`seed`. Recommended as a future
+   session's task (e.g. a new `scripts/resume_play.py`, or a
+   `--resume-from trace.jsonl:N` flag on `scripts/visualize_play.py`),
+   not started.
 
 ## baseline-120-reki-core — integration summary (consolidated 2026-08-06)
 
@@ -455,6 +472,105 @@ this round — no `keep`/`revert`/`investigate` verdict is written into its
 §7 ladder table until the real Colab number exists; the Cerebras dev-lane
 result stays a labeled proxy only, per `AGENTS.md`/`STRATEGY.md`'s hard
 backend-mismatch rule.
+
+## `feat/baseline-120-followups` — status (2026-08-06)
+
+**Branch:** `feat/baseline-120-followups`, off `master` at `b405d3b` (the
+`baseline-120-reki-core` integration commit summarized above). Not yet
+merged to `master` — pushed to `origin` as a feature branch only, pending
+a whole-branch code review and the human owner's explicit merge
+go-ahead, per this project's standing branch-promotion rule. Implemented
+via a 7-task plan
+(`docs/superpowers/plans/2026-08-06-baseline-120-followups.md`), each
+task individually code-reviewed.
+
+**What was built** — the 4 items recorded as recommendations in this
+file's "Exact next action" section after the `baseline-120` integration:
+
+1. **Trace export / JSONL format.** New `zerx/trace.py` module:
+   `TraceMeta`/`TraceStep` frozen dataclasses, the `TraceRecorder`
+   protocol, `JsonlTraceWriter` (appends one JSON line per step to a
+   `traces/<game_id>-<timestamp>.jsonl` file — `traces/` gitignored, same
+   treatment as `notebooks/*.ipynb`), and `CompositeTraceRecorder` (fans
+   out to multiple recorders, e.g. live render + file write
+   simultaneously). `zerx/policy.py`'s `Decision` gained a new optional
+   `raw_response: Optional[str] = None` field, populated by `decide()`
+   whenever a model call happens — including on a failed parse, which is
+   what makes a captured trace useful for diagnosing the pre-existing
+   `build_prompt()` legal-actions gap (see "Known failures or risks" item
+   6 above). `zerx/config.py` gained `trace_export_path: Optional[str] =
+   None` (env var `ZERX_TRACE_EXPORT_PATH`), off by default.
+   `agent/my_agent.py`'s `MyAgent` gained a public `self.trace_recorder`
+   attribute (a `JsonlTraceWriter` if `trace_export_path` is set, else
+   `None`), reassignable from an external script before `agent.main()`
+   runs — the same "reach into agent internals" seam
+   `scripts/play_local.py` already uses for `MAX_ACTIONS`, done here
+   intentionally. `choose_action()` calls `self.trace_recorder.record(...)`
+   once per step only when a recorder is attached — zero overhead and no
+   behavior change when it isn't (off by default, this project's usual
+   convention for every new flag).
+2. **Live + replay pygame visualizer** (`scripts/visualize_play.py`,
+   new): `--live --game <id> [--max-steps N] [--save path]
+   [--history-cap N]` attaches a `LivePygameRecorder` (optionally
+   composed with a `JsonlTraceWriter` via `--save`) to a real `MyAgent`
+   run, rendering the grid plus a reasoning-text side panel per step,
+   with SPACE pause (blocks inside `record()` on the game loop's own
+   thread, so it genuinely halts execution) and ←/→ history navigation
+   through a capped in-memory buffer. `--replay <trace.jsonl>` loads a
+   saved trace file with no game engine involved, sharing the same
+   render/navigate path, always paused. A follow-up fix round (see
+   `docs/superpowers/sdd/2026-08-06-baseline-120-followups/task-5-report.md`'s
+   appended "Fix report") resolved 2 Important review findings: the
+   reasoning panel was ~55% clipped off-screen at the project's real
+   64x64 grid (fixed via a wider window plus a new `_wrap_reasoning` pure
+   helper that computes wrap width from real font metrics instead of a
+   hardcoded guess), and the live window used to vanish the instant a run
+   ended (fixed by keeping it open, paused, pumping events, after
+   `agent.main()` returns).
+3. **`README.md`** (new, repo root): project overview, setup, running
+   locally, `ZERX_*` env var overview, running tests (including the
+   `-m "not slow_local_engine"` fast-iteration filter), and the new
+   visualizer's `--live`/`--replay` usage.
+4. **`ARC_API_KEY` documentation.** The design investigation's
+   no-code-change finding — that `arc_agi`'s `Arcade` client already
+   resolves `ARC_API_KEY` via `constructor arg > ARC_API_KEY env var >
+   anonymous-key fallback` internally, and every call site in this repo
+   constructs `Arcade(...)` with no override, so setting the env var in
+   your own shell already works with zero code changes — was confirmed
+   accurate; this item is documentation-only, folded into `README.md`.
+
+**Manual-verification result (Task 5's own smoke test, both before and
+after the fix round):** a live `--game ls20 --max-steps 5 --save
+<path>.jsonl` run exited cleanly (exit code 0, no traceback) and produced
+a well-formed trace file (valid meta line + step lines, correct
+`game_id`, parses back via `_load_trace` into the exact dataclasses) —
+confirmed both pre-fix and post-fix. **Visual/UI correctness was
+explicitly not verified by any implementer:** grid cell colors matching
+the palette, reasoning-panel text legibility/wrapping, SPACE actually
+pausing/resuming a live run, and ←/→ arrow-key history navigation
+changing what's rendered on screen were all out of reach — no screenshot
+or display-inspection tool was available in the implementing sessions.
+This remains an open item: a human needs eyes on the actual running
+window before the visualizer is treated as fully proven, not just "code
+complete."
+
+**Final test count (this task, full unfiltered suite, no `-m` filter):**
+`.venv/Scripts/pytest.exe tests/ -q` → **332 passed, 0 failed** (1
+pre-existing, unrelated `PytestUnknownMarkWarning` for
+`pytest.mark.slow_local_engine`, same warning noted in the
+`baseline-120-reki-core` integration above).
+
+**Deferred:** 10 Minor findings surfaced across this branch's per-task
+code reviews (8 from Task 5's `scripts/visualize_play.py` review round —
+composite-recorder ordering on quit, `--history-cap 0` crashing, argparse
+gaps, `_run_replay` touching recorder privates, the replay window being
+mis-captioned "live", meta being discarded in replay, a zero-step trace
+opening a blank window, a missing `VENDOR.exists()` guard — plus 2 more
+from elsewhere in the branch) were intentionally left unfixed, per each
+task's explicit instruction to defer Minor findings to a final
+whole-branch review rather than fix them piecemeal. They are not
+itemized here — triaging and deciding which to fix is the final
+reviewer's job, not recorded as a checklist in this status entry.
 
 ## Uncommitted or external artifacts
 
