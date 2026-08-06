@@ -13,6 +13,7 @@ like `agent/my_agent.py` itself already does.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -205,3 +206,64 @@ def test_trace_recorder_records_once_per_choose_action_call_when_attached():
     agent.choose_action([frame, frame], frame)
     assert len(spy.steps) == 2
     assert spy.steps[1].step_index == 1
+
+
+def test_config_driven_trace_recorder_writes_a_replayable_meta_line(tmp_path, monkeypatch):
+    """Finding 1(b): a config-driven trace_recorder (built from
+    Config.trace_export_path, e.g. a headless Colab run via
+    ZERX_TRACE_EXPORT_PATH) must call write_meta() so the resulting file
+    has a meta line -- scripts/visualize_play.py's _load_trace requires
+    one to replay a trace at all. Uses a real directory-mode
+    JsonlTraceWriter (the actual code under test), not a hand-rolled file.
+    """
+    monkeypatch.setenv("ZERX_TRACE_EXPORT_PATH", str(tmp_path))
+    agent = _make_agent()
+
+    frame = FrameData(
+        frame=[[[0, 0], [0, 0]]],
+        state=GameState.NOT_FINISHED,
+        available_actions=[1, 2, 5],
+    )
+    agent.choose_action([frame], frame)
+
+    matches = list(tmp_path.glob(f"{agent.game_id}-*.jsonl"))
+    assert len(matches) == 1
+    lines = matches[0].read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) >= 1
+    meta_line = json.loads(lines[0])
+    assert meta_line["type"] == "meta"
+    assert meta_line["game_id"] == agent.game_id
+
+
+def test_trace_recorder_exception_does_not_desync_agent_state():
+    """Finding 2: a dev-only observability sink (trace_recorder) must
+    never be able to alter real agent behavior. A raising `.record()`
+    must not trip the OUTER exception boundary (choose_action must still
+    return a normal decide()-sourced action, not _safe_fallback_action's
+    `{"source": "exception_fallback"}`), and `_actions_taken` must still
+    increment normally across repeated calls.
+    """
+    agent = _make_agent()
+
+    class _RaisingRecorder:
+        def record(self, step):
+            raise RuntimeError("simulated trace sink failure (e.g. disk full)")
+
+    agent.trace_recorder = _RaisingRecorder()
+
+    frame = FrameData(
+        frame=[[[0, 0], [0, 0]]],
+        state=GameState.NOT_FINISHED,
+        available_actions=[1, 2, 5],
+    )
+
+    first = agent.choose_action([frame], frame)
+    assert isinstance(first, GameAction)
+    assert first.reasoning != {"source": "exception_fallback"}
+    assert "source" in first.reasoning and first.reasoning["source"] != "exception_fallback"
+    assert agent._actions_taken == 1
+
+    second = agent.choose_action([frame, frame], frame)
+    assert isinstance(second, GameAction)
+    assert second.reasoning != {"source": "exception_fallback"}
+    assert agent._actions_taken == 2

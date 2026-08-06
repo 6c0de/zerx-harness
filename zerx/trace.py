@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Protocol, Sequence, Tuple, Union
 
@@ -89,21 +90,56 @@ class TraceRecorder(Protocol):
 
 
 class JsonlTraceWriter:
-    """Appends one JSON line per record to `path`. `write_meta` must be
-    called at most once, before any `record` call, to write the file's
-    header line -- callers that don't need a header (e.g. tests exercising
-    `record` alone) may skip it.
+    """Appends one JSON line per record to a target file. `path` may name
+    an exact file -- refuses to construct if it already exists, since a
+    second run appending to it would silently merge two runs into one
+    corrupt file with duplicate step_index ordering -- or an existing
+    directory (or a path ending in a path separator), in which case the
+    actual filename is resolved lazily on the first `write_meta` or
+    `record` call, as `<dir>/<game_id>-<timestamp>.jsonl` (design spec's
+    default naming), using whichever call arrives first (both TraceMeta
+    and TraceStep carry a game_id). `write_meta` is optional and, if
+    called, must happen before any `record` call.
     """
 
     def __init__(self, path: Union[str, Path]) -> None:
-        self._path = Path(path)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        candidate = Path(path)
+        self._dir: Optional[Path] = None
+        self._path: Optional[Path] = None
+        if candidate.is_dir() or str(path).endswith(("/", "\\")):
+            self._dir = candidate
+        else:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            if candidate.exists():
+                raise FileExistsError(
+                    f"{candidate}: trace file already exists -- JsonlTraceWriter "
+                    "never appends to a pre-existing file (a second run would "
+                    "silently merge into the first and corrupt step_index "
+                    "ordering); pass a new path, or a directory to get an "
+                    "auto-named <game_id>-<timestamp>.jsonl file instead"
+                )
+            self._path = candidate
 
     def write_meta(self, meta: TraceMeta) -> None:
+        self._resolve_path(meta.game_id)
         self._append({"type": "meta", **asdict(meta)})
 
     def record(self, step: TraceStep) -> None:
+        self._resolve_path(step.game_id)
         self._append({"type": "step", **asdict(step)})
+
+    def _resolve_path(self, game_id: str) -> None:
+        if self._path is not None:
+            return
+        self._dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        candidate = self._dir / f"{game_id}-{timestamp}.jsonl"
+        if candidate.exists():
+            raise FileExistsError(
+                f"{candidate}: auto-named trace file already exists (two runs "
+                f"of {game_id!r} started in the same second) -- retry"
+            )
+        self._path = candidate
 
     def _append(self, payload: dict) -> None:
         with self._path.open("a", encoding="utf-8") as fh:

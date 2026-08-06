@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
+
+import pytest
 
 from zerx.policy import Decision
 from zerx.trace import (
@@ -88,6 +91,64 @@ def test_jsonl_trace_writer_appends_meta_then_steps(tmp_path):
     step_line = json.loads(lines[1])
     assert step_line["type"] == "step"
     assert step_line["action_name"] == "ACTION1"
+
+
+def test_jsonl_trace_writer_refuses_to_construct_over_existing_file(tmp_path):
+    path = tmp_path / "trace.jsonl"
+    path.write_text("existing content\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        JsonlTraceWriter(str(path))
+
+
+def test_jsonl_trace_writer_directory_mode_auto_names_file_on_record(tmp_path):
+    writer = JsonlTraceWriter(str(tmp_path))
+    decision = Decision(action=Action(name=ActionName.ACTION1), source="fallback_deterministic")
+    step = build_trace_step(
+        step_index=0, game_id="ls20", frame=_frame(), decision=decision,
+        levels_completed=0, game_state="NOT_FINISHED",
+    )
+    writer.record(step)
+
+    matches = list(tmp_path.glob("ls20-*.jsonl"))
+    assert len(matches) == 1
+    pattern = re.compile(r"^ls20-\d{8}T\d{6}\.jsonl$")
+    assert pattern.match(matches[0].name)
+    lines = matches[0].read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    step_line = json.loads(lines[0])
+    assert step_line["type"] == "step"
+    assert step_line["game_id"] == "ls20"
+
+
+def test_jsonl_trace_writer_directory_mode_trailing_slash_auto_names_file(tmp_path):
+    writer = JsonlTraceWriter(str(tmp_path) + "/")
+    decision = Decision(action=Action(name=ActionName.ACTION1), source="fallback_deterministic")
+    step = build_trace_step(
+        step_index=0, game_id="ls20", frame=_frame(), decision=decision,
+        levels_completed=0, game_state="NOT_FINISHED",
+    )
+    writer.record(step)
+
+    matches = list(tmp_path.glob("ls20-*.jsonl"))
+    assert len(matches) == 1
+
+
+def test_jsonl_trace_writer_directory_mode_resolves_via_write_meta_alone(tmp_path):
+    writer = JsonlTraceWriter(str(tmp_path))
+    writer.write_meta(
+        TraceMeta(game_id="ls20", seed=0, backend="fake", config_hash="abc123", started_at="2026-08-06T00:00:00")
+    )
+
+    matches = list(tmp_path.glob("ls20-*.jsonl"))
+    assert len(matches) == 1
+    pattern = re.compile(r"^ls20-\d{8}T\d{6}\.jsonl$")
+    assert pattern.match(matches[0].name)
+    lines = matches[0].read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    meta_line = json.loads(lines[0])
+    assert meta_line["type"] == "meta"
+    assert meta_line["game_id"] == "ls20"
 
 
 def test_composite_trace_recorder_fans_out_to_every_child():

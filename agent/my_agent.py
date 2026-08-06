@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 # Verified against the vendored arcengine/agents packages
@@ -32,7 +33,7 @@ from zerx.memory import MemoryState, StructuredMemoryState, maybe_refresh_struct
 from zerx.model_backend import select_backend
 from zerx.perception import perceive
 from zerx.policy import Decision, _FALLBACK_PREFERENCE, decide
-from zerx.trace import TraceRecorder, JsonlTraceWriter, build_trace_step
+from zerx.trace import TraceRecorder, JsonlTraceWriter, TraceMeta, build_trace_step
 from zerx.transitions import TransitionLedger, grid_hash
 from zerx.types import Action, ActionName, GameFrame
 
@@ -163,11 +164,20 @@ class MyAgent(Agent):
         # --- baseline-130-hypothesis (feat/baseline-130-hypothesis-memory) ---
         self._structured_memory = StructuredMemoryState()
         # --- end baseline-130-hypothesis ---
-        self.trace_recorder: Optional[TraceRecorder] = (
-            JsonlTraceWriter(self._config.trace_export_path)
-            if self._config.trace_export_path
-            else None
-        )
+        trace_recorder: Optional[TraceRecorder] = None
+        if self._config.trace_export_path:
+            writer = JsonlTraceWriter(self._config.trace_export_path)
+            writer.write_meta(
+                TraceMeta(
+                    game_id=self.game_id,
+                    seed=0,
+                    backend=self._config.backend,
+                    config_hash=self._config.config_hash(),
+                    started_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
+            trace_recorder = writer
+        self.trace_recorder: Optional[TraceRecorder] = trace_recorder
 
     def is_done(self, frames: List[FrameData], latest_frame: FrameData) -> bool:
         # Stop once we win. Don't stop on GAME_OVER — we want to RESET and
@@ -264,16 +274,27 @@ class MyAgent(Agent):
         # --- end baseline-115-exact-state-memory ---
 
         if self.trace_recorder is not None:
-            self.trace_recorder.record(
-                build_trace_step(
-                    step_index=self._actions_taken,
-                    game_id=self.game_id,
-                    frame=frame,
-                    decision=decision,
-                    levels_completed=latest_frame.levels_completed,
-                    game_state=latest_frame.state.name,
+            try:
+                self.trace_recorder.record(
+                    build_trace_step(
+                        step_index=self._actions_taken,
+                        game_id=self.game_id,
+                        frame=frame,
+                        decision=decision,
+                        levels_completed=latest_frame.levels_completed,
+                        game_state=latest_frame.state.name,
+                    )
                 )
-            )
+            except Exception as exc:  # noqa: BLE001 - a dev-only observability
+                # sink (disk full, permissions, etc.) must never be able to
+                # alter real agent behavior or desync the transition ledger
+                # / action counter below -- log and continue as if untraced.
+                logger.warning(
+                    "trace_recorder.record failed: %s: %s; continuing without "
+                    "tracing this step",
+                    type(exc).__name__,
+                    exc,
+                )
 
         self._actions_taken += 1
 
