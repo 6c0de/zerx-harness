@@ -588,6 +588,40 @@ They are not itemized beyond this per-task breakdown — triaging and
 deciding which to fix is the final reviewer's job, not a checklist to be
 resolved in this status entry.
 
+**Final whole-branch review — done.** Triaged all 14 deferred Minor
+findings above as fine-to-defer (none were must-fix-before-merge), and
+found 3 new Important findings no single task-scoped review could see —
+all 3 traced to code or a scope decision this session's own plan
+authored, not implementer mistakes, so each was confirmed with the human
+owner before fixing:
+
+1. `JsonlTraceWriter` opened in append mode with no auto-naming, so
+   re-running the README's own documented example silently merged two
+   runs into one corrupt trace file. Fixed: it now refuses to construct
+   against an already-existing exact file, and supports a directory-mode
+   that auto-names `<dir>/<game_id>-<timestamp>.jsonl`. Config-driven
+   traces (`ZERX_TRACE_EXPORT_PATH`) previously had no meta line and
+   could never be replayed — `MyAgent.__init__` now always calls
+   `write_meta(...)` on its writer.
+2. A `trace_recorder.record()` failure (disk full, permissions) could
+   propagate into `_choose_action_inner` and skip the transition-ledger
+   update for that step, desyncing agent state for the rest of the run —
+   on exactly the Colab runs this project's promotion gate depends on.
+   Fixed: wrapped in `try/except Exception` with a log warning; a
+   dev-only observability sink can no longer alter real agent behavior.
+3. The approved design spec's ↑/↓ reasoning-panel scroll was silently
+   dropped during planning in favor of a truncation indicator. Fixed:
+   real scrolling implemented (`_clamp_scroll`, `LivePygameRecorder`'s
+   `_reasoning_scroll`/`_current_step` state, UP/DOWN handlers).
+
+Fix wave commits `1305572`, `644f83d`; scoped re-review confirmed all 3
+addressed with no new breakage. **Final test count (full unfiltered
+suite, superseding the `332 passed` figure above):**
+`.venv/Scripts/pytest.exe tests/ -q` → **341 passed, 0 failed** (332 + 9
+new tests covering the 3 fixes). The visual/UI-correctness gap noted
+above is unchanged by this fix wave — still not verified by any
+implementer, still needs a human with eyes on the running window.
+
 ## Uncommitted or external artifacts
 
 None tracked or required. `.venv/`, `vendor/ARC-AGI-3-Agents/`,
