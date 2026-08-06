@@ -73,11 +73,25 @@ def _wrap_reasoning(text: str, chars_per_line: int) -> List[str]:
     which has no guaranteed word boundaries) at `chars_per_line`. Purely a
     wrap -- the caller (`_render`) is responsible for windowing a scroll
     position over the result; this function never truncates.
+
+    Splits on embedded newlines first -- a literal "\\n" character has no
+    printable glyph in most fonts and renders as a visible box/tofu
+    character inline otherwise. Markdown-fenced model responses
+    ("```json\\n{...}\\n```", which real backends genuinely return) always
+    embed real newlines; confirmed live in the visualizer panel.
     """
     chars_per_line = max(1, chars_per_line)
     if not text:
         return []
-    return [text[i : i + chars_per_line] for i in range(0, len(text), chars_per_line)]
+    lines: List[str] = []
+    for raw_line in text.split("\n"):
+        if not raw_line:
+            lines.append("")
+            continue
+        lines.extend(
+            raw_line[i : i + chars_per_line] for i in range(0, len(raw_line), chars_per_line)
+        )
+    return lines
 
 
 def _load_trace(path: str) -> Tuple[TraceMeta, List[TraceStep]]:

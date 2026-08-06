@@ -70,6 +70,33 @@ def test_wrap_reasoning_wraps_at_chars_per_line():
     assert _wrap_reasoning("abcdefghij", chars_per_line=4) == ["abcd", "efgh", "ij"]
 
 
+def test_wrap_reasoning_treats_embedded_newlines_as_real_line_breaks():
+    # A literal "\n" character has no printable glyph in most fonts and
+    # was previously rendered as a visible box/tofu character inline --
+    # markdown-fenced model responses ("```json\n{...}\n```", which
+    # Cerebras genuinely returns) always embed real newlines. Confirmed
+    # live: this exact artifact showed up in the visualizer panel.
+    assert _wrap_reasoning('```json\n{"a": 1}\n```', chars_per_line=20) == [
+        "```json",
+        '{"a": 1}',
+        "```",
+    ]
+
+
+def test_wrap_reasoning_still_wraps_long_lines_within_a_newline_segment():
+    assert _wrap_reasoning("abcdefghij\nklmnop", chars_per_line=4) == [
+        "abcd",
+        "efgh",
+        "ij",
+        "klmn",
+        "op",
+    ]
+
+
+def test_wrap_reasoning_preserves_blank_lines_between_paragraphs():
+    assert _wrap_reasoning("a\n\nb", chars_per_line=20) == ["a", "", "b"]
+
+
 def test_wrap_reasoning_never_truncates_long_text():
     # "x" * 100 wraps into 10 lines of 10 chars each -- no cap, no
     # indicator; windowing over this is the caller's (_render's) job now.
