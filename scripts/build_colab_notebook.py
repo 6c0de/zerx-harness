@@ -205,35 +205,36 @@ def build() -> dict:
             # are case-sensitive) and its own documented `vllm serve` usage
             # snippet, is "google/gemma-4-31B-it".
             #
-            # Precision/quantization: this Colab runtime (A100-SXM4-80GB, confirmed
-            # 2026-08-04, see docs/HANDOFF.md) has enough VRAM to load bf16 (~61.4GB
-            # weights) directly. We deliberately do NOT do that here. Kaggle's RTX
-            # Pro 6000 (48GB) cannot fit bf16 (61.4GB > 48GB) and must run quantized;
-            # per the human owner's 2026-08-06 decision (docs/HANDOFF.md), Colab
-            # mirrors Kaggle's precision instead of using whatever the Colab card
-            # happens to have headroom for, so a Colab validation result actually
-            # reflects the model Kaggle will run, not a strictly-more-accurate one
-            # (AGENTS.md/docs/TEAM_WORKFLOW.md: Kaggle is the deployment source of
-            # truth; Colab results are provisional and must be comparable to it).
+            # Precision: bf16, no quantization. This reverses the 2026-08-06 fp8
+            # decision, whose premise turned out to be false.
             #
-            # 8-bit, not 4-bit: vLLM's bitsandbytes in-flight quantization only
-            # supports 4-bit (nf4) from an unquantized checkpoint -- confirmed
-            # against vLLM's own docs (docs.vllm.ai/en/stable/features/quantization/
-            # bnb/, fetched 2026-08-06), which document exactly one in-flight mode
-            # ("load as 4bit quantization") and no 8-bit equivalent. The real 8-bit
-            # path is vLLM's dynamic FP8 quantization (--quantization fp8): weights
-            # quantized to FP8_E4M3 (~1 byte/param, ~31GB total) with a per-tensor
-            # scale computed at load time, no calibration data needed (vLLM's FP8
-            # W8A8 docs, docs.vllm.ai/en/latest/features/quantization/llm_compressor/
-            # fp8/, fetched 2026-08-06). Ampere (A100, compute capability 8.0) is
-            # below the >=8.9 threshold for full W8A8, so it runs FP8 as weight-only
-            # W8A16 via the FP8 Marlin kernel -- correct weights/memory footprint,
-            # but the docs note "latency improvements are limited in this mode" on
-            # this card; Kaggle's RTX Pro 6000 (Blackwell, likely >=8.9) may see real
-            # W8A8 speedup instead. That inference-speed difference is expected and
-            # does not break the precision parity this switch is actually for.
-            # bitsandbytes is no longer installed above -- FP8 quantization is
-            # native to vLLM and needs no extra package.
+            # That decision reasoned: "Kaggle's RTX Pro 6000 has 48GB VRAM -- bf16
+            # (~61.4GB weights) does not fit; it needs quantization regardless of
+            # what Colab needs", and set Colab to fp8 so the two sides would run
+            # comparable precision. The 48GB figure was never measured. The
+            # environment probe measured it (2026-08-06,
+            # docs/superpowers/experiments/kaggle-env-probe.md): the card is an
+            # RTX PRO 6000 Blackwell Server Edition with 97887 MiB -- ~96GB, not
+            # 48GB -- and the attached weights are 62.58GB of bf16.
+            #
+            # So bf16 fits on both sides, with room to spare:
+            #   Kaggle  RTX PRO 6000 Blackwell  ~96GB  vs 62.58GB   (~33GB spare)
+            #   Colab   A100-SXM4-80GB           80GB  vs 62.58GB   (~17GB spare)
+            #
+            # Parity is preserved -- which was the real point of the fp8 decision
+            # (AGENTS.md/docs/TEAM_WORKFLOW.md: Kaggle is the deployment source of
+            # truth, Colab results are provisional and must be comparable) -- and
+            # now at the higher precision rather than the lower one. Quantization
+            # was a cost paid for a constraint that does not exist.
+            #
+            # Kaggle does not serve through vLLM at all: the probe found vllm
+            # absent from the image, internet disabled, and no vLLM in the
+            # competition's offline wheels, so the submission loads bf16 in-process
+            # via transformers (zerx/model_backend.py's TransformersModelBackend).
+            # Colab keeps vLLM because it can install it, and because a served
+            # endpoint is the faster dev loop. The precision matches; the serving
+            # mechanism deliberately does not, and that difference is recorded
+            # rather than hidden.
             VLLM_LOG_PATH = "/content/vllm_server.log"
             vllm_log = open(VLLM_LOG_PATH, "w")
             vllm_proc = subprocess.Popen(
@@ -242,7 +243,6 @@ def build() -> dict:
                     "--model", "google/gemma-4-31B-it",
                     "--served-model-name", "gemma-4-31b-it",
                     "--port", "8000",
-                    "--quantization", "fp8",
                     "--dtype", "bfloat16",
                     # Smoke test only needs a short context (64x64 grid + a short
                     # prompt) -- capping this shrinks the KV cache's VRAM footprint.
@@ -461,7 +461,8 @@ def build() -> dict:
                     capture_output=True, text=True,
                 ).stdout.strip(),
                 "dtype": "bfloat16",
-                "quantization": "fp8",
+                "quantization": None,  # bf16 fits on both cards; see the
+                # serving cell for why the 2026-08-06 fp8 decision was reversed.
                 "game_sample": GAME_SAMPLE,
                 "max_steps_per_game": MAX_STEPS_PER_GAME,
                 "budget_soft_cap": os.environ.get("ZERX_BUDGET_SOFT_CAP"),

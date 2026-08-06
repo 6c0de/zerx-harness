@@ -137,21 +137,22 @@ def test_build_wires_gemma_model_backend_against_local_vllm_server():
     assert "localhost:8000" in combined
 
 
-def test_build_quantizes_the_model_to_8bit_fp8_for_kaggle_parity():
-    """The attached Colab GPU (A100-SXM4-80GB) has enough VRAM for bf16
-    directly, but Kaggle's RTX Pro 6000 (48GB) does not -- per the human
-    owner's 2026-08-06 decision (docs/HANDOFF.md), Colab deliberately loads
-    the model at the same precision Kaggle will use, so a Colab validation
-    result is actually comparable to the Kaggle deployment, not a
-    strictly-more-accurate one it will never see in production. vLLM's
-    bitsandbytes in-flight quantization only supports 4-bit (nf4) from an
-    unquantized checkpoint (docs.vllm.ai/en/stable/features/quantization/bnb/,
-    checked 2026-08-06) -- the real 8-bit path is dynamic FP8 quantization
-    (--quantization fp8), which needs no calibration data and no extra
-    package.
+def test_build_runs_bf16_unquantized_matching_what_kaggle_actually_runs():
+    """Colab must load the precision Kaggle will actually deploy, so a Colab
+    result is comparable to the deployment rather than to a model that never
+    ships. That requirement has not changed; the precision it implies has.
+
+    The previous fp8 setting rested on "Kaggle's RTX Pro 6000 has 48GB, so
+    bf16 (~61.4GB) does not fit". That number was never measured. The
+    environment probe measured it (docs/superpowers/experiments/kaggle-env-probe.md):
+    97887 MiB -- ~96GB, not 48GB -- against 62.58GB of bf16 weights. So bf16
+    fits on both cards (Colab's A100-SXM4-80GB has ~17GB spare, Kaggle ~33GB),
+    parity holds at the higher precision, and the quantization was a cost paid
+    for a constraint that does not exist.
     """
     combined = _all_cell_sources(build_colab_notebook.build())
-    assert '"--quantization", "fp8"' in combined
+    assert '"--quantization"' not in combined, "bf16 fits on both cards"
+    assert '"--dtype", "bfloat16"' in combined
     assert "--max-model-len" in combined
 
 
@@ -321,7 +322,11 @@ def test_save_results_cell_records_the_actual_quantization_method():
     source that produced it.
     """
     combined = _all_cell_sources(build_colab_notebook.build())
-    assert '"quantization": "fp8"' in combined
+    # The value changed from "fp8" to None when the probe showed bf16 fits on
+    # both cards, but the property being tested did not: a saved result must
+    # still say which quantization was active, so "no quantization" is
+    # recorded explicitly rather than left to be inferred from a missing key.
+    assert '"quantization": None' in combined
 
 
 def test_build_saves_structured_results_outside_ephemeral_storage():

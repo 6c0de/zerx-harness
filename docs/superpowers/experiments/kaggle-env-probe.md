@@ -194,6 +194,31 @@ answer is better than the project assumed.
    `docs/HANDOFF.md` as a human-owner decision and should be re-decided by
    the owner, not silently reversed by this session.
 
+### What was built from these findings (Phase B, `feat/kaggle-phase-b-transformers-backend`)
+
+- `TransformersModelBackend` in `zerx/model_backend.py`: loads bf16 in-process
+  straight off the read-only `/kaggle/input` mount, no server, no
+  quantization. torch/transformers are imported inside its loader function,
+  never at module scope, so the module still imports on a GPU-free machine —
+  now asserted by walking the AST rather than grepping the source, since the
+  literal text `import torch` legitimately appears.
+- `select_backend` splits the two Gemma backends: `gemma_local` keeps the
+  HTTP client (Colab, where we start vLLM ourselves), `gemma_kaggle` gets the
+  in-process one. Before this, `gemma_kaggle` returned the HTTP backend and
+  would have failed silently into heuristics-only play — and the existing
+  readiness gate would **not** have caught it, because it only checked for
+  `FakeModelBackend`.
+- One copy of the weights per process, behind a lock. `Swarm` builds a fresh
+  agent per game and runs them concurrently; a per-instance load would have
+  pulled 62.58 GB off disk once per game.
+- The notebook's readiness gate moved into its own script, run as a
+  subprocess. It loads the weights to prove they load — which means the
+  kernel would still be holding 62.58 GB when `main.py` started its own copy
+  had it stayed in-process. It also logs the GPU it actually got, performs
+  one real generation, and projects `25 games x max_actions x latency`
+  against the ~9 h limit, warning above 7 h. The per-game cap has never been
+  calibrated against a real Gemma call.
+
 ### Still unverified
 
 Every run here reported `is_competition_rerun: false`. Whether the scored

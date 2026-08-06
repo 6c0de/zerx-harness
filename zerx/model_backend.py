@@ -11,6 +11,7 @@ GPU or a running server. The real server is started only in
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Protocol
@@ -109,6 +110,172 @@ class GemmaModelBackend:
         raise last_error
 
 
+ModelLoader = Callable[[str, str], "_LoadedModel"]
+
+
+@dataclass
+class _LoadedModel:
+    """What a loader hands back: something callable plus what it cost."""
+
+    generate: Callable[[str, int], str]
+    description: str
+
+
+# One process, one copy of the weights.
+#
+# The framework's Swarm builds a *fresh agent per game* and runs them
+# concurrently, so a backend that loaded in __init__ would pull 62.58 GB off
+# disk once per game and blow up VRAM on the second one. The cache is keyed
+# by (path, dtype) and guarded by its own lock so two game threads racing
+# into the first call still load exactly once.
+_MODEL_CACHE: dict = {}
+_MODEL_CACHE_LOCK = threading.Lock()
+
+
+def clear_model_cache() -> None:
+    """Drop every cached model. For tests that inject different loaders."""
+    with _MODEL_CACHE_LOCK:
+        _MODEL_CACHE.clear()
+
+
+def _default_transformers_loader(model_path: str, dtype: str) -> _LoadedModel:
+    """Load Gemma with transformers + accelerate, straight off the read-only
+    /kaggle/input mount.
+
+    torch/transformers are imported *here*, not at module scope, for the same
+    reason the Cerebras import is lazy: this module is bundled into the Kaggle
+    notebook and imported by `agent/my_agent.py`, and every local test must
+    keep running on a machine with no GPU and no transformers installed.
+
+    Measured Kaggle facts this relies on
+    (docs/superpowers/experiments/kaggle-env-probe.md): the card is an RTX PRO
+    6000 Blackwell with ~96 GB, the weights are 62.58 GB of bf16, and
+    `transformers` 5.0.0 + `accelerate` 1.13.0 are present while `vllm` and
+    `bitsandbytes` are not and cannot be installed offline. So: bf16, no
+    quantization, no server.
+    """
+    import torch
+    from transformers import AutoModelForCausalLM, AutoProcessor
+
+    torch_dtype = getattr(torch, dtype)
+    processor = AutoProcessor.from_pretrained(model_path)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        dtype=torch_dtype,
+        device_map="auto",
+        # /kaggle/working has ~21 GB free against 62.58 GB of weights, so
+        # nothing may be copied off the read-only input mount.
+        local_files_only=True,
+    )
+    model.eval()
+
+    tokenizer = getattr(processor, "tokenizer", processor)
+
+    def _generate(prompt: str, max_new_tokens: int) -> str:
+        messages = [{"role": "user", "content": prompt}]
+        # No <|think|> control token: Gemma 4 enables its thinking mode only
+        # when that token opens the system prompt. We want one short JSON
+        # object per call, and decide() allows exactly one model call per
+        # action, so reasoning tokens are latency we cannot spend. The model
+        # still emits an empty thought block, which policy's
+        # _extract_json_object already sees through.
+        text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        with torch.inference_mode():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,  # one legal action, not a creative sample
+                pad_token_id=getattr(tokenizer, "eos_token_id", None),
+            )
+        # Return only what the model added, never the echoed prompt.
+        new_tokens = output[0][inputs["input_ids"].shape[-1]:]
+        return tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+    device = str(getattr(model, "device", "unknown"))
+    return _LoadedModel(generate=_generate, description=f"{model_path} dtype={dtype} device={device}")
+
+
+class TransformersModelBackend:
+    """In-process Gemma, loaded with transformers — no HTTP, no server.
+
+    `GemmaModelBackend` talks to a vLLM OpenAI-compatible server. That works
+    on Colab, where vLLM can be installed. It cannot work on Kaggle: the
+    probe established that `vllm` is absent from the image, internet is
+    disabled, and the competition's offline wheels ship `arc_agi`/`arcengine`
+    and friends but no vLLM. Pointing `gemma_kaggle` at an HTTP backend there
+    means every call raises ConnectionRefused and the agent quietly plays
+    heuristics-only — the exact silent-degradation failure this project keeps
+    having to hunt down.
+
+    Calls are serialized. The framework runs games concurrently in threads
+    and a single HF model object is not safe to `generate()` from several at
+    once; serializing costs throughput but a corrupted decode costs the run.
+    """
+
+    def __init__(
+        self,
+        model_path: str,
+        dtype: str = "bfloat16",
+        max_new_tokens: int = 96,
+        loader: Optional[ModelLoader] = None,
+    ) -> None:
+        if not model_path:
+            raise ValueError(
+                "TransformersModelBackend needs a model_path. Set ZERX_MODEL_PATH "
+                "(or Config.model_path) to the directory the weights mount at."
+            )
+        self.model_path = model_path
+        self.dtype = dtype
+        self.max_new_tokens = max_new_tokens
+        self._loader = loader if loader is not None else _default_transformers_loader
+        self._call_lock = threading.Lock()
+        self.last_latency_seconds: Optional[float] = None
+        self.call_count = 0
+
+    def _loaded(self) -> _LoadedModel:
+        # Keyed on the weights alone, deliberately: "one copy of these weights
+        # per process" is the property that matters, and a key including the
+        # loader's id() could collide after garbage collection recycles it.
+        # Production has exactly one loader; tests that swap it call
+        # clear_model_cache().
+        key = (self.model_path, self.dtype)
+        with _MODEL_CACHE_LOCK:
+            if key not in _MODEL_CACHE:
+                start = time.monotonic()
+                _MODEL_CACHE[key] = self._loader(self.model_path, self.dtype)
+                logger.info(
+                    "loaded model in %.1fs: %s",
+                    time.monotonic() - start,
+                    _MODEL_CACHE[key].description,
+                )
+            return _MODEL_CACHE[key]
+
+    def warmup(self) -> float:
+        """Load the weights and run one real generation, returning its latency.
+
+        Called by the Kaggle notebook's readiness gate so an OOM or a missing
+        checkpoint fails *before* gameplay rather than degrading the whole
+        evaluation silently (AGENTS.md), and so the measured per-call latency
+        is on the record before anyone picks a per-game action cap.
+        """
+        start = time.monotonic()
+        self.generate("Reply with exactly this JSON and nothing else: {\"ok\": true}")
+        return time.monotonic() - start
+
+    def generate(self, prompt: str) -> str:
+        loaded = self._loaded()
+        with self._call_lock:
+            start = time.monotonic()
+            try:
+                return loaded.generate(prompt, self.max_new_tokens)
+            finally:
+                self.last_latency_seconds = time.monotonic() - start
+                self.call_count += 1
+
+
 def select_backend(config: Config) -> ModelBackend:
     """Construct the ModelBackend named by config.backend
     ('fake' | 'cerebras_dev' | 'gemma_local' | 'gemma_kaggle'),
@@ -136,8 +303,19 @@ def select_backend(config: Config) -> ModelBackend:
                 config.platform,
             )
         return FakeModelBackend()
-    if config.backend in ("gemma_local", "gemma_kaggle"):
+    if config.backend == "gemma_local":
+        # Colab: a vLLM OpenAI-compatible server we started ourselves.
         return GemmaModelBackend(config.model_revision, base_url=config.gemma_base_url)
+    if config.backend == "gemma_kaggle":
+        # Kaggle: in-process, because there is nothing to talk to over HTTP.
+        # vLLM is absent from the image, internet is disabled, and the
+        # competition's offline wheels do not include it
+        # (docs/superpowers/experiments/kaggle-env-probe.md). Routing this to
+        # GemmaModelBackend would make every call raise ConnectionRefused and
+        # drop the agent into heuristics-only without a word.
+        return TransformersModelBackend(
+            config.model_path, dtype=config.model_dtype, max_new_tokens=config.max_new_tokens
+        )
     if config.backend == "cerebras_dev":
         # Imported lazily, INSIDE the one branch that can use it. The Kaggle
         # bundle (scripts/build_notebook.py) deliberately ships only

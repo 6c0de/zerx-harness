@@ -107,15 +107,33 @@ def test_gemma_backend_raises_after_exhausting_retries():
         backend.generate("prompt text")
 
 
-def test_gemma_backend_module_never_imports_vllm_torch_or_transformers():
-    """The whole point of the injected-http_post pattern is that
-    zerx/model_backend.py itself stays GPU/model-library-free, exactly
-    like zerx/backends/cerebras_dev.py — verify by reading the module's
-    own source, not by asserting something that's always true.
+def test_gemma_backend_module_imports_no_model_library_at_module_scope():
+    """`import zerx.model_backend` must never require torch/transformers/vllm.
+
+    This used to be checked by grepping the module source for "import torch".
+    That proxy broke once `TransformersModelBackend` landed: it genuinely does
+    import torch and transformers, but *inside* its loader function, which
+    only runs on Kaggle where they exist. The text is present; the invariant
+    is not violated.
+
+    So check the invariant itself — no module-scope import of those libraries
+    — by walking the AST rather than the characters. `test_bundled_zerx_
+    package_imports_without_the_backends_subpackage` covers the behavioural
+    half: the bundle really does import on a machine without them.
     """
+    import ast
+
     import zerx.model_backend as mb
 
-    source = open(mb.__file__, encoding="utf-8").read()
-    assert "import vllm" not in source
-    assert "import torch" not in source
-    assert "import transformers" not in source
+    tree = ast.parse(open(mb.__file__, encoding="utf-8").read())
+    forbidden = {"vllm", "torch", "transformers", "accelerate"}
+
+    module_level_imports = set()
+    for node in tree.body:  # top level only — nested ones are the whole point
+        if isinstance(node, ast.Import):
+            module_level_imports.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            module_level_imports.add(node.module.split(".")[0])
+
+    leaked = forbidden & module_level_imports
+    assert not leaked, f"module-scope import of {sorted(leaked)} breaks GPU-free import"
