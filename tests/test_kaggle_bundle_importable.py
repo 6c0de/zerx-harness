@@ -156,21 +156,72 @@ def test_run_cell_selects_a_real_backend_not_the_silent_fake_one():
     assert build_notebook.ZERX_PLATFORM == "kaggle"
 
 
-def test_run_cell_refuses_to_play_when_the_backend_resolves_to_fake():
-    """A readiness gate, not just an env var: the env var could be right while
-    the resolution still lands on the fake backend. The gate must run before
-    the agent starts, and must raise rather than merely print — IPython
-    swallows a shell command's non-zero exit.
+def _gate_cell_source() -> str:
+    """The cell that writes the standalone readiness-gate script."""
+    sources = _cell_sources(build_notebook.build())
+    matches = [s for s in sources if s.startswith("%%writefile /tmp/zerx_readiness_gate.py")]
+    assert len(matches) == 1, "expected exactly one cell to write the readiness gate"
+    return matches[0]
+
+
+def test_readiness_gate_rejects_both_backends_that_cannot_actually_answer():
+    """Two distinct ways a scored run ends up with no working model, and the
+    gate must catch both:
+
+      - `FakeModelBackend`, whose every generate() raises;
+      - `GemmaModelBackend`, an HTTP client for a vLLM server that does not
+        exist on Kaggle. This one is easy to miss precisely because it is
+        *not* the fake backend — a check for FakeModelBackend alone passes it
+        straight through into a heuristics-only run.
     """
-    source = _run_cell_source()
+    gate = _gate_cell_source()
 
-    assert "select_backend" in source, "run cell never resolves the backend"
-    assert "FakeModelBackend" in source, "run cell never checks for the fake backend"
-    assert "raise SystemExit" in source, "gate must abort, not just warn"
+    assert "select_backend" in gate, "gate never resolves the backend"
+    assert "FakeModelBackend" in gate
+    assert "GemmaModelBackend" in gate
+    assert gate.count("sys.exit(") >= 3, "gate must abort, not merely warn"
 
-    gate_at = source.index("select_backend")
-    launch_at = source.index("main.py --agent myagent")
+
+def test_readiness_gate_runs_in_its_own_process_before_the_agent():
+    """The gate loads all 62.58 GB of weights to prove they load. If it did
+    that in the notebook kernel, the kernel would still hold them when
+    `main.py` starts and loads a second copy — and not even a ~96 GB card
+    holds two. Exiting the process is what frees the VRAM.
+
+    It also must precede the run and its failure must actually stop the
+    notebook: IPython swallows a shell command's non-zero exit, so the run
+    cell has to check the return code and raise.
+    """
+    run_cell = _run_cell_source()
+
+    assert "/tmp/zerx_readiness_gate.py" in run_cell, "run cell never invokes the gate"
+    assert "returncode" in run_cell, "a non-zero gate exit must be checked"
+    assert "raise SystemExit" in run_cell, "gate failure must stop the notebook"
+
+    gate_at = run_cell.index("zerx_readiness_gate.py")
+    launch_at = run_cell.index("main.py --agent myagent")
     assert gate_at < launch_at, "the readiness gate must precede the run"
+
+
+def test_readiness_gate_measures_a_real_model_call_before_the_run():
+    """The per-game action cap has never been calibrated against a real Gemma
+    call, and ~25 games x max_actions has to fit in Kaggle's ~9 hours. The
+    gate performs one real generation and reports what it cost, so the number
+    exists before the run rather than after it.
+    """
+    gate = _gate_cell_source()
+
+    assert "warmup()" in gate, "gate never performs a real generation"
+    assert "last_latency_seconds" in gate, "gate never reports per-call latency"
+    assert "max_actions" in gate, "gate never projects the run against the cap"
+
+
+def test_run_cell_reports_the_gpu_it_actually_got():
+    """Every environment probe ran with is_competition_rerun=false, so it is
+    unproven that a scored rerun gets the same card a --accelerator push does.
+    Logging it is what makes a hardware surprise diagnosable.
+    """
+    assert "nvidia-smi" in _gate_cell_source()
 
 
 def test_run_cell_refuses_to_play_when_no_model_directory_is_configured():
@@ -280,18 +331,26 @@ def test_kaggle_env_selects_a_real_model_backend_not_the_fake_one():
     crash and no log line -- just a near-zero score.
     """
     from zerx.config import Config
-    from zerx.model_backend import FakeModelBackend, GemmaModelBackend, select_backend
+    from zerx.model_backend import (
+        FakeModelBackend,
+        GemmaModelBackend,
+        TransformersModelBackend,
+        select_backend,
+    )
 
     assert isinstance(select_backend(Config()), FakeModelBackend)  # the old state
 
     kaggle_env = {
         "ZERX_BACKEND": "gemma_kaggle",
         "ZERX_PLATFORM": "kaggle",
-        "ZERX_GEMMA_BASE_URL": "http://localhost:8000/v1/chat/completions",
+        "ZERX_MODEL_PATH": build_notebook.KAGGLE_MODEL_DIR,
     }
     backend = select_backend(Config.from_env(kaggle_env))
-    assert isinstance(backend, GemmaModelBackend)
-    assert backend.base_url == "http://localhost:8000/v1/chat/completions"
+    assert isinstance(backend, TransformersModelBackend)
+    # Not the HTTP backend: there is no vLLM server on Kaggle to talk to, and
+    # pointing at one would fail silently into heuristics-only play.
+    assert not isinstance(backend, GemmaModelBackend)
+    assert backend.model_path == build_notebook.KAGGLE_MODEL_DIR
 
 
 def test_run_cell_exports_the_backend_env_vars():

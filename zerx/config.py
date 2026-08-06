@@ -106,6 +106,18 @@ class Config:
     candidate_count: int = 1
     structured_memory_on: bool = False
     gemma_base_url: str = "http://localhost:8000/v1/chat/completions"
+    model_path: Optional[str] = None  # filesystem directory the weights load
+    # from, used by backend="gemma_kaggle" (in-process transformers). Unlike
+    # gemma_base_url — which points at a vLLM server we start ourselves on
+    # Colab — Kaggle has no server to talk to: vllm is absent from the image,
+    # internet is disabled, and the competition's offline wheels do not ship
+    # it. See docs/superpowers/experiments/kaggle-env-probe.md.
+    model_dtype: str = "bfloat16"  # the RTX PRO 6000 Blackwell measured on
+    # Kaggle has ~96 GB against 62.58 GB of bf16 weights, so no quantization
+    # is needed. This contradicts the 2026-08-06 fp8 decision, which assumed
+    # a 48 GB card; that decision is the human owner's to revisit.
+    max_new_tokens: int = 96  # decide() allows one model call per action and
+    # asks for a single JSON object, so generation length is pure latency.
     trace_export_path: Optional[str] = None  # dev-only: when set, MyAgent
     # writes one JSONL trace file per game via zerx/trace.py -- off by
     # default, never read outside agent/my_agent.py's construction.
@@ -194,6 +206,9 @@ class Config:
                 env, "ZERX_STRUCTURED_MEMORY_ON", cls.structured_memory_on
             ),
             gemma_base_url=_env_str(env, "ZERX_GEMMA_BASE_URL", cls.gemma_base_url),
+            model_path=_env_optional_str(env, "ZERX_MODEL_PATH", cls.model_path),
+            model_dtype=_env_str(env, "ZERX_MODEL_DTYPE", cls.model_dtype),
+            max_new_tokens=_env_int(env, "ZERX_MAX_NEW_TOKENS", cls.max_new_tokens),
             trace_export_path=_env_optional_str(
                 env, "ZERX_TRACE_EXPORT_PATH", cls.trace_export_path
             ),

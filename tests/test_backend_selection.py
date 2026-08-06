@@ -23,16 +23,43 @@ def test_select_backend_gemma_local_returns_configured_gemma_backend():
     assert backend.base_url == "http://localhost:9001/v1/chat/completions"
 
 
-def test_select_backend_gemma_kaggle_returns_configured_gemma_backend():
+def test_select_backend_gemma_kaggle_returns_an_in_process_backend():
+    """`gemma_kaggle` used to return `GemmaModelBackend` — an HTTP client for
+    a vLLM server. That can never work on Kaggle: the environment probe
+    (docs/superpowers/experiments/kaggle-env-probe.md) established that `vllm`
+    is absent from the image, internet is disabled, and the competition's
+    offline wheels ship `arc_agi`/`arcengine` but no vLLM. Every call would
+    have raised ConnectionRefused and dropped the agent into heuristics-only
+    silently — indistinguishable from having no model at all, which is the
+    failure ARC-HANDOFF-001 is about.
+
+    `gemma_local` still returns the HTTP backend: on Colab we start a real
+    vLLM server ourselves.
+    """
+    from zerx.model_backend import TransformersModelBackend
+
     config = Config(
         backend="gemma_kaggle",
         model_revision="gemma-4-31b-it",
-        gemma_base_url="http://localhost:9002/v1/chat/completions",
+        model_path="/kaggle/input/models/google/gemma-4/transformers/gemma-4-31b-it/1",
     )
     backend = select_backend(config)
-    assert isinstance(backend, GemmaModelBackend)
-    assert backend.model_revision == "gemma-4-31b-it"
-    assert backend.base_url == "http://localhost:9002/v1/chat/completions"
+    assert isinstance(backend, TransformersModelBackend)
+    assert not isinstance(backend, GemmaModelBackend)
+    assert backend.model_path == (
+        "/kaggle/input/models/google/gemma-4/transformers/gemma-4-31b-it/1"
+    )
+    assert backend.dtype == "bfloat16"
+
+
+def test_select_backend_gemma_kaggle_refuses_without_a_model_path():
+    """A missing path must fail loudly at construction, not at the first
+    action of a scored run.
+    """
+    import pytest
+
+    with pytest.raises(ValueError, match="model_path"):
+        select_backend(Config(backend="gemma_kaggle", platform="kaggle"))
 
 
 def test_select_backend_cerebras_dev_returns_cerebras_backend_on_local_platform():
