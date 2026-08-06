@@ -7,13 +7,21 @@
 #   make submit       # build notebook from agent/my_agent.py + push to Kaggle
 #   make status       # tail the latest Kaggle run
 
+ifeq ($(OS),Windows_NT)
+PYTHON          ?= python
+VENV            := .venv
+VENV_BIN        := $(VENV)/Scripts
+else
 PYTHON          ?= python3.12
 VENV            := .venv
-VENV_PY         := $(VENV)/bin/python
-VENV_PIP        := $(VENV)/bin/pip
+VENV_BIN        := $(VENV)/bin
+endif
+
+VENV_PY         := $(VENV_BIN)/python
+VENV_PIP        := $(VENV_BIN)/pip
 # Read the project-local token at recipe time and expose it as KAGGLE_API_TOKEN
 # (the only env var the modern Kaggle CLI honours for token auth).
-KAGGLE          := KAGGLE_API_TOKEN=$$(cat .kaggle/access_token) $(VENV)/bin/kaggle
+KAGGLE          := KAGGLE_API_TOKEN=$$(cat .kaggle/access_token) $(VENV_BIN)/kaggle
 FRAMEWORK_REPO  := https://github.com/arcprize/ARC-AGI-3-Agents.git
 FRAMEWORK_DIR   := vendor/ARC-AGI-3-Agents
 COMP_SLUG       := arc-prize-2026-arc-agi-3

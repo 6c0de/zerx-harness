@@ -89,6 +89,24 @@ def test_build_checks_out_exact_commit():
     assert "git clone" in combined
 
 
+def test_build_clones_and_slims_the_agents_framework():
+    """agent/my_agent.py does `from agents.agent import Agent` -- that
+    package is the arcprize/ARC-AGI-3-Agents framework (not a pip package)
+    and must actually be cloned into vendor/ARC-AGI-3-Agents before the
+    smoke-game cell imports MyAgent. Real Colab run confirmed the notebook
+    previously never cloned it at all, raising 'ModuleNotFoundError: No
+    module named agents'. Must also run scripts/slim_framework.py, matching
+    `make setup`'s local flow, so the upstream __init__.py's eager
+    langgraph/langsmith/smolagents imports (never installed here) don't
+    raise a second, different ImportError once the clone itself is fixed.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert "git clone" in combined
+    assert "ARC-AGI-3-Agents.git" in combined
+    assert "vendor/ARC-AGI-3-Agents" in combined
+    assert "slim_framework.py" in combined
+
+
 def test_build_prints_environment_without_secrets():
     combined = _all_cell_sources(build_colab_notebook.build())
     assert "nvidia-smi" in combined or "torch.cuda" in combined
@@ -119,17 +137,34 @@ def test_build_wires_gemma_model_backend_against_local_vllm_server():
     assert "localhost:8000" in combined
 
 
-def test_build_quantizes_the_model_to_fit_a_40gb_gpu():
-    """31B dense in bf16/fp16 is ~2 bytes/param, ~61GB of weights alone --
-    does not fit an A100-SXM4-40GB's 40GB VRAM. Real Colab run (2026-08-04)
-    confirmed the unquantized bf16 config never brought the vLLM server up
-    within the wait window. Must load quantized (bitsandbytes) instead, and
-    the quantization package must actually be installed.
+def test_build_quantizes_the_model_to_8bit_fp8_for_kaggle_parity():
+    """The attached Colab GPU (A100-SXM4-80GB) has enough VRAM for bf16
+    directly, but Kaggle's RTX Pro 6000 (48GB) does not -- per the human
+    owner's 2026-08-06 decision (docs/HANDOFF.md), Colab deliberately loads
+    the model at the same precision Kaggle will use, so a Colab validation
+    result is actually comparable to the Kaggle deployment, not a
+    strictly-more-accurate one it will never see in production. vLLM's
+    bitsandbytes in-flight quantization only supports 4-bit (nf4) from an
+    unquantized checkpoint (docs.vllm.ai/en/stable/features/quantization/bnb/,
+    checked 2026-08-06) -- the real 8-bit path is dynamic FP8 quantization
+    (--quantization fp8), which needs no calibration data and no extra
+    package.
     """
     combined = _all_cell_sources(build_colab_notebook.build())
-    assert "bitsandbytes" in combined
-    assert "--quantization" in combined
+    assert '"--quantization", "fp8"' in combined
     assert "--max-model-len" in combined
+
+
+def test_build_does_not_install_bitsandbytes_now_that_fp8_is_used():
+    """bitsandbytes was only ever needed for the old 4-bit in-flight path;
+    FP8 quantization is native to vLLM. Must not regress to actually
+    INSTALLING the now-unused package (the name may still appear in an
+    explanatory comment about why 4-bit/bitsandbytes was rejected in favor
+    of fp8 -- only the install command matters, same convention as
+    test_build_does_not_pin_the_pre_gemma4_vllm_version above).
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert 'pip install -q "bitsandbytes' not in combined
 
 
 def test_build_surfaces_real_vllm_server_log_on_startup_failure():
@@ -230,6 +265,17 @@ def test_save_results_cell_saves_full_per_game_breakdown_not_just_aggregate():
     combined = _all_cell_sources(build_colab_notebook.build())
     assert '"per_game": per_game_full' in combined
     assert '"game_id": "ls20"' not in combined  # no longer a single hardcoded game
+
+
+def test_save_results_cell_records_the_actual_quantization_method():
+    """The result JSON previously recorded only 'dtype', never which
+    quantization was actually active -- silently indistinguishable between
+    a 4-bit run and a bf16 run. Must record 'quantization' explicitly so a
+    saved result is self-describing without cross-referencing the notebook
+    source that produced it.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert '"quantization": "fp8"' in combined
 
 
 def test_build_saves_structured_results_outside_ephemeral_storage():

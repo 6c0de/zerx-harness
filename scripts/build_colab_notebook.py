@@ -74,7 +74,6 @@ PINNED_INSTALL = dedent(
     # torch/vllm state instead of silently trusting it.
     !pip install -q uv
     !uv pip install -q --system --reinstall "vllm==0.26.0" --torch-backend=auto
-    !pip install -q "bitsandbytes>=0.43.0"
     """
 )
 
@@ -146,6 +145,24 @@ def build() -> dict:
         )
     )
 
+    # agent/my_agent.py does `from agents.agent import Agent` -- that `agents`
+    # package is the arcprize/ARC-AGI-3-Agents framework, not a pip package.
+    # Locally, `make setup` clones it to vendor/ARC-AGI-3-Agents and
+    # scripts/slim_framework.py rewrites its __init__.py to skip the
+    # upstream's eager langgraph/langsmith/smolagents imports (deps we never
+    # install). This notebook cloned OUR repo above but never cloned the
+    # framework itself -- real Colab run confirmed this raises
+    # "ModuleNotFoundError: No module named 'agents'" in the smoke-game cell
+    # below, since vendor/ARC-AGI-3-Agents simply doesn't exist yet.
+    framework_clone_cell = code_cell(
+        dedent(
+            """\
+            !git clone --depth 1 https://github.com/arcprize/ARC-AGI-3-Agents.git vendor/ARC-AGI-3-Agents
+            !python3.12 scripts/slim_framework.py
+            """
+        )
+    )
+
     env_print_cell = code_cell(
         dedent(
             """\
@@ -188,13 +205,35 @@ def build() -> dict:
             # are case-sensitive) and its own documented `vllm serve` usage
             # snippet, is "google/gemma-4-31B-it".
             #
-            # Precision/quantization: 31B dense in bf16/fp16 is ~2 bytes/param ~= 61GB
-            # of weights alone -- does NOT fit an A100-SXM4-40GB's 40GB VRAM (confirmed
-            # against this notebook's own env-print cell's nvidia-smi output). Load
-            # 4-bit (bitsandbytes nf4) instead: ~1/4 the weight footprint (~15GB),
-            # leaving headroom for KV cache. Record whatever precision actually loads
-            # successfully -- this is the A100 starting point, re-verify for L4 (24GB,
-            # even tighter) per STRATEGY.md.
+            # Precision/quantization: this Colab runtime (A100-SXM4-80GB, confirmed
+            # 2026-08-04, see docs/HANDOFF.md) has enough VRAM to load bf16 (~61.4GB
+            # weights) directly. We deliberately do NOT do that here. Kaggle's RTX
+            # Pro 6000 (48GB) cannot fit bf16 (61.4GB > 48GB) and must run quantized;
+            # per the human owner's 2026-08-06 decision (docs/HANDOFF.md), Colab
+            # mirrors Kaggle's precision instead of using whatever the Colab card
+            # happens to have headroom for, so a Colab validation result actually
+            # reflects the model Kaggle will run, not a strictly-more-accurate one
+            # (AGENTS.md/docs/TEAM_WORKFLOW.md: Kaggle is the deployment source of
+            # truth; Colab results are provisional and must be comparable to it).
+            #
+            # 8-bit, not 4-bit: vLLM's bitsandbytes in-flight quantization only
+            # supports 4-bit (nf4) from an unquantized checkpoint -- confirmed
+            # against vLLM's own docs (docs.vllm.ai/en/stable/features/quantization/
+            # bnb/, fetched 2026-08-06), which document exactly one in-flight mode
+            # ("load as 4bit quantization") and no 8-bit equivalent. The real 8-bit
+            # path is vLLM's dynamic FP8 quantization (--quantization fp8): weights
+            # quantized to FP8_E4M3 (~1 byte/param, ~31GB total) with a per-tensor
+            # scale computed at load time, no calibration data needed (vLLM's FP8
+            # W8A8 docs, docs.vllm.ai/en/latest/features/quantization/llm_compressor/
+            # fp8/, fetched 2026-08-06). Ampere (A100, compute capability 8.0) is
+            # below the >=8.9 threshold for full W8A8, so it runs FP8 as weight-only
+            # W8A16 via the FP8 Marlin kernel -- correct weights/memory footprint,
+            # but the docs note "latency improvements are limited in this mode" on
+            # this card; Kaggle's RTX Pro 6000 (Blackwell, likely >=8.9) may see real
+            # W8A8 speedup instead. That inference-speed difference is expected and
+            # does not break the precision parity this switch is actually for.
+            # bitsandbytes is no longer installed above -- FP8 quantization is
+            # native to vLLM and needs no extra package.
             VLLM_LOG_PATH = "/content/vllm_server.log"
             vllm_log = open(VLLM_LOG_PATH, "w")
             vllm_proc = subprocess.Popen(
@@ -203,8 +242,7 @@ def build() -> dict:
                     "--model", "google/gemma-4-31B-it",
                     "--served-model-name", "gemma-4-31b-it",
                     "--port", "8000",
-                    "--quantization", "bitsandbytes",
-                    "--load-format", "bitsandbytes",
+                    "--quantization", "fp8",
                     "--dtype", "bfloat16",
                     # Smoke test only needs a short context (64x64 grid + a short
                     # prompt) -- capping this shrinks the KV cache's VRAM footprint.
@@ -382,6 +420,7 @@ def build() -> dict:
                     capture_output=True, text=True,
                 ).stdout.strip(),
                 "dtype": "bfloat16",
+                "quantization": "fp8",
                 "game_sample": GAME_SAMPLE,
                 "max_steps_per_game": MAX_STEPS_PER_GAME,
                 "per_game": per_game_full,
@@ -406,6 +445,7 @@ def build() -> dict:
             intro_cell,
             install_cell,
             checkout_cell,
+            framework_clone_cell,
             env_print_cell,
             start_vllm_cell,
             smoke_game_cell,
