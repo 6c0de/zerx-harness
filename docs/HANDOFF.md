@@ -6,25 +6,33 @@ needed yet). See `docs/TEAM_WORKFLOW.md` for the 5-day schedule this feeds
 into.
 
 - Updated at: 2026-08-06
-- Current owner: (local session, Claude Code — `baseline-120` integration)
-- Next owner: whoever picks up the two `baseline-120` prerequisites (visualizer,
-  `build_prompt()` legal-actions fix) or the Day 1 Kaggle smoke submission —
-  see "Exact next action" below — not auto-started
-- Branch: `master` (all 4 `baseline-120` tracks merged in, sequentially, via
-  `integration/baseline-120`, per `docs/superpowers/plans/parallel-baseline-120/INTEGRATION.md`)
-- Commit: merge of `integration/baseline-120` into `master`, local only as of
-  this update — **not yet pushed to `origin/master`**, pending explicit
-  human-owner confirmation (see "Exact next action")
-- Experiment ID: `baseline-120` (recorded, flagged `investigate` — see
-  `docs/superpowers/experiments/baseline-120.md`; `baseline-100` remains
-  `investigate` too, unchanged from before, see below)
-- Config ID/hash: n/a for `baseline-120`'s dev-lane sweep — see
-  `docs/superpowers/experiments/baseline-120.md` for the actual config used
-  (`ZERX_BACKEND=cerebras_dev`, `ZERX_MODEL_REVISION=gemma-4-31b`)
-- Sprint day (1–5): still Day 3 by commit-date timeline — `baseline-120`'s
-  infrastructure is complete and its dev-lane signal is in, but the
-  authoritative Colab run is explicitly postponed (see below), and Day 1's
-  Kaggle smoke submission is still open — see "Exact next action"
+- Current owner: (local session, Claude Code — `baseline-120-followups` +
+  `policy-prompt-legal-budget` + `colab-ready` integration)
+- Next owner: whoever gets the push-to-`origin/master` go-ahead, or picks up
+  an item from "Exact next action" below — not auto-started
+- Branch: `master`, locally **33 commits ahead of `origin/master`** after
+  this round's integration. All three source branches
+  (`feat/baseline-120-followups`, `feat/policy-prompt-legal-budget`,
+  `integration/baseline-120-colab-ready`) are merged in, sequentially, via
+  `integration/baseline-120-followups`, per
+  `docs/superpowers/plans/2026-08-06-baseline-120-followups-integration.md`.
+  The earlier `baseline-120-reki-core` 4-track integration (below) was
+  already on `origin/master` before this round started.
+- Commit: `24aefc6` (merge of `integration/baseline-120-followups` into
+  `master`), local only as of this update — **not yet pushed to
+  `origin/master`**, pending explicit human-owner confirmation (see "Exact
+  next action")
+- Experiment ID: `baseline-120` remains flagged `investigate` (see
+  `docs/superpowers/experiments/baseline-120.md`) — this round lands
+  infrastructure (visualizer, trace export) and a real fix (the
+  `build_prompt()` legal-actions gap), not a new experiment result;
+  `baseline-100` remains `investigate` too, unchanged
+- Config ID/hash: n/a — no new model-in-loop sweep was run this round; see
+  "Exact next action" for the recommended next one
+- Sprint day (1–5): still Day 3 by commit-date timeline. Both of the human
+  owner's stated prerequisites for the authoritative Colab run (a
+  visualizer, and the `build_prompt()` legal-actions fix) are now on
+  `master` — see "Exact next action" for what's actually next
 
 ## Objective
 
@@ -351,6 +359,13 @@ parallel tracks below (none of them touch Kaggle).
    when this was attempted. Note also that `MAX_ACTIONS` silently caps at
    80 steps/game (open item 7 below), so the re-run must record its actual
    step count rather than the requested one.
+
+   **Updated 2026-08-06 — FULLY RESOLVED, now on `master`.** `e402a0d`
+   merged into `master` via the "Integration" section above (merge commit
+   `f0c68f7`); `zerx/policy.py`'s `build_prompt()` on `master` now takes
+   and renders `legal_actions`/`budget`, verified directly post-merge. The
+   re-run item above is still genuinely outstanding — it's now the
+   leading candidate in "Exact next action" below.
 7. **`scripts/play_local.py`'s `MyAgentCls.MAX_ACTIONS = min(MyAgentCls.MAX_ACTIONS,
    args.max_steps)` can only ever *lower* the step cap**, never raise it
    above `MyAgentCls`'s existing default (80, inherited from the vendored
@@ -438,53 +453,55 @@ directly rather than trusting the auto-merge.
 
 ## Exact next action
 
-**`baseline-120` is not yet pushed to `origin/master`** — that push, and
-any `STRATEGY.md` edit, require explicit human-owner confirmation before
-this session proceeds (see top-of-file "Commit" note). Once confirmed and
-pushed, this is the priority-ordered list of what's actually next; none
-of the items below are started, all are recommendations for the human
-owner to schedule:
+**Local `master` is 33 commits ahead of `origin/master`, not yet
+pushed** — that push, and any `STRATEGY.md` edit, require explicit
+human-owner confirmation before this session proceeds (see top-of-file
+"Commit" note). Once confirmed and pushed, this is the priority-ordered
+list of what's actually next; none of the items below are started, all
+are recommendations for the human owner to schedule:
 
-1. **`baseline-120`'s own next steps, in the human owner's stated order**
-   (see "Colab run — explicitly postponed" below for the full reasoning):
-   (a) build the visualizer (reference:
-   [github.com/Darkosxl/Agent_Harness_Example](https://github.com/Darkosxl/Agent_Harness_Example)
-   — pygame grid + scrollable reasoning panel, pause/step-back-forward
-   through a capped history buffer); (b) fix `zerx/policy.py`'s
-   `build_prompt()` to include `legal_actions` in the prompt text (see
-   "Known failures or risks" item 6); (c) only then re-run the dev-lane
-   sweep and/or the authoritative Colab Gemma-4-31B-it run and write the
-   real `keep`/`revert`/`investigate` verdict into `STRATEGY.md` §7 — the
-   one `STRATEGY.md` edit this whole `baseline-120` effort authorizes,
-   and only after that real number exists.
-2. **A general `README.md`** documenting project usage — none exists yet;
-   recommended by the human owner as a near-term, low-risk documentation
-   gap, independent of the items above.
-3. **A personal `ARC_API_KEY`** (separate from `CEREBRAS_API_KEY`) so
-   local runs attribute to the human owner's account on
-   `three.arcprize.org`'s web dashboard instead of an anonymous one —
-   complements the visualizer (item 1a), doesn't change how anything
-   runs locally. Recommended by the human owner, not started.
-4. **A JSON-like export of played games**, for later offline inspection —
-   per-game (or per-step) structured data including each decision's
-   reasoning/raw model output, not just the final parsed action (today's
-   `Decision` dataclass in `zerx/policy.py` and `ExperimentRecord` in
-   `eval/run_ablation.py` both discard the raw model response once
-   parsed). Recommended by the human owner as the natural data source for
-   the visualizer's replay buffer too (same underlying trace, consumed
-   either live or from a saved file) — worth designing together with item
-   1a rather than as two unrelated features. Not started.
+1. **Both of the human owner's stated prerequisites for the
+   authoritative Colab run are now done** (see "Colab run — explicitly
+   postponed" below for the original reasoning): the visualizer
+   (`scripts/visualize_play.py`) and the `build_prompt()` legal-actions
+   fix are both on `master` as of this integration. The next step is
+   therefore either or both of:
+   (a) re-run the 8-game `cerebras_dev` dev-lane sweep
+   (`ls20, vc33, su15, tn36, ka59, lf52, tr87, sc25`) with the fixed
+   prompt — it should no longer fall back to invented action names or
+   illegal `ACTION6` guesses — and/or
+   (b) finally attempt the real, authoritative Colab Gemma-4-31B-it run.
+   Only after a real number from (b) exists should the
+   `keep`/`revert`/`investigate` verdict be written into `STRATEGY.md`
+   §7 — still the one `STRATEGY.md` edit this whole `baseline-120`
+   effort authorizes, and still not done by this session.
+2. ~~A general `README.md` documenting project usage~~ **Done** —
+   shipped by `feat/baseline-120-followups`, now on `master`.
+3. ~~A personal `ARC_API_KEY` so local runs attribute to the human
+   owner's account~~ **Done (documentation-only)** — `README.md`
+   confirms `arc_agi`'s `Arcade` client already resolves `ARC_API_KEY`
+   from the environment with zero code changes needed.
+4. ~~A JSON-like export of played games for offline inspection~~
+   **Done** — `zerx/trace.py`'s `JsonlTraceWriter`/`TraceStep`/`TraceMeta`,
+   wired into `agent/my_agent.py` behind `ZERX_TRACE_EXPORT_PATH`
+   (off by default), now on `master`.
 5. Kaggle Day 1 smoke submission is still open — get explicit approval
    before running it, independent of everything above.
 6. `baseline-100`'s results-capture gap is now closed going forward by
    Track 4's Part A notebook rewrite (see "Tests executed and results"
    above) — no further action needed for that specific gap; a fresh Colab
    run would exercise the fix.
-7. The 4 `feat/baseline-120-*` branches are fully merged into
-   `integration/baseline-120` → `master` (locally) — safe to delete once
-   the human owner confirms, not deleted automatically. Same standing
-   offer for the 4 `feat/...` branches used for Day 3, already merged.
-8. **Resume/fork from a recorded step — documented, not built.** See
+7. **Kaggle submission still has no model attached at all** — see
+   ARC-HANDOFF-001 below (P0, unresolved by this or any branch). This is
+   very likely the single biggest remaining blocker to a real score and
+   is independent of the Colab-run item above.
+8. The 3 branches merged this round (`feat/baseline-120-followups`,
+   `feat/policy-prompt-legal-budget`, `integration/baseline-120-colab-ready`)
+   are fully merged into `master` (locally) — safe to delete once the
+   human owner confirms the push, not deleted automatically. Same
+   standing offer for the earlier `feat/baseline-120-*` and Day-3
+   branches, already merged.
+9. **Resume/fork from a recorded step — documented, not built.** See
    `docs/superpowers/specs/2026-08-06-baseline-120-followups-design.md`'s
    "Future work: resume/fork from a recorded step" section for the full
    mechanism (deterministically replay a saved trace's recorded actions
@@ -611,14 +628,99 @@ this round — no `keep`/`revert`/`investigate` verdict is written into its
 result stays a labeled proxy only, per `AGENTS.md`/`STRATEGY.md`'s hard
 backend-mismatch rule.
 
-## `feat/baseline-120-followups` — status (2026-08-06)
+## Integration — `feat/baseline-120-followups` + `feat/policy-prompt-legal-budget` + `integration/baseline-120-colab-ready` → `master` (2026-08-06)
 
-**Branch:** `feat/baseline-120-followups`, off `master` at `b405d3b` (the
-`baseline-120-reki-core` integration commit summarized above). Not yet
-merged to `master` — pushed to `origin` as a feature branch only, pending
-a whole-branch code review and the human owner's explicit merge
-go-ahead, per this project's standing branch-promotion rule. Implemented
-via a 7-task plan
+Executed per
+`docs/superpowers/plans/2026-08-06-baseline-120-followups-integration.md`,
+in a fresh session with no memory of any of the three branches' build
+history — every SHA, merge-base, and branch-state claim in that plan was
+re-verified against `origin` before merging. `feat/baseline-120-followups`
+had drifted one docs-only commit past the plan's recorded tip (`a4088b4`,
+adding this file's own "live reproduction" entry above and the
+integration plan doc itself — no code changed); the other two branches
+matched the plan's recorded SHAs exactly.
+
+**Merge order and results** (smallest/least-invasive first, per the
+plan's "Why this order"), full unfiltered suite after each step:
+
+1. `feat/baseline-120-followups` — clean fast-forward from `master` @
+   `b405d3b`, no conflicts. **353 passed, 0 failed.**
+2. `feat/policy-prompt-legal-budget` — conflicts in `zerx/policy.py` and
+   this file, exactly as the plan (and ARC-HANDOFF-004 below) predicted.
+   `zerx/policy.py` resolved by union: the `raw_response`/`model_error`
+   capture from `feat/baseline-120-followups` plus the 5-argument
+   `build_prompt(perception, new_memory, candidates, legal_actions,
+   budget)` call from `feat/policy-prompt-legal-budget`, at both
+   `decide()` call sites — not a "pick one side" resolution. This file's
+   conflict was two branches independently appending real content to the
+   same "known failures item 6" paragraph — kept both, in sequence.
+   **372 passed, 0 failed** (+19 over step 1, matching that branch's own
+   solo-checkout count exactly).
+3. `integration/baseline-120-colab-ready` — auto-merged with **no
+   conflict markers at all**, since most of its content was already
+   present via step 2. This file's diff from this step was 58 purely
+   additive lines (the "Colab/Kaggle quantization decision" section
+   above) — no content lost or overwritten, confirmed by reading the
+   diff, not just trusting the clean auto-merge. **375 passed, 0
+   failed** (+3 over step 2, matching that branch's own unique diff).
+
+**Test count sanity check:** 308 (pre-integration `master`) + 45
+(`feat/baseline-120-followups`'s own net-new) + 19
+(`feat/policy-prompt-legal-budget`'s own net-new) + 3
+(`integration/baseline-120-colab-ready`'s own unique net-new — most of
+its tests were already counted via step 2's shared history) = 375.
+Matches exactly.
+
+**What this round closes:**
+
+- **Known failures item 6 — the `build_prompt()` legal-actions gap — is
+  now fixed on `master`.** `zerx/policy.py`'s `build_prompt()` takes
+  `legal_actions`/`budget` and renders them in the prompt text. Verified
+  directly post-merge:
+  ```python
+  prompt = build_prompt(
+      PerceptionResult(ascii_grid="0", objects=()), MemoryState(),
+      legal_actions=frozenset({ActionName.ACTION1, ActionName.RESET}),
+  )
+  assert "ACTION1" in prompt and "ACTION2" not in prompt  # passes
+  ```
+  This is the actual fix for both Track 4's original dev-lane `0.0`
+  sweep and this session's own live `ls20` reproduction recorded above.
+- **ARC-HANDOFF-004** (the predicted merge hazard, below) **is
+  resolved** — the union resolution landed exactly as that entry
+  recommended, at merge commit `f0c68f7`.
+- **The visualizer + trace tooling `feat/baseline-120-followups` built
+  is what let a human directly watch and diagnose the dev-lane Cerebras
+  run** that reproduced item 6 live, closing the loop the "Colab run —
+  explicitly postponed" note (below) described as the reason the
+  visualizer needed to exist before the authoritative Colab run.
+- Post-merge verification gates (per the plan): `select_backend()`'s
+  lazy `CerebrasDevBackend` import is the only occurrence in
+  `zerx/model_backend.py`, still inside the `cerebras_dev` branch, not
+  module scope. `STRATEGY.md` is byte-identical to `origin/master`'s
+  copy — untouched by this integration, per this project's standing
+  rule that only the integration owner edits it, and only after a real
+  Colab number exists.
+
+**Noted, not fixed (explicitly out of this integration's scope per the
+plan):** `agent/my_agent.py`'s private `_shapes_match` (guarding the
+exact-state-memory outcome-recording block) and `zerx/transitions.py`'s
+own `_shapes_match` (now added inside `_diff`, via
+`feat/policy-prompt-legal-budget`'s ARC-AUDIT-004 fix) are now duplicate
+implementations of the same shape check. Not dead code — both call
+sites are real and semantically distinct (one guards `_diff`'s shape
+assumption inside `TransitionLedger.finalize()`; the other gates
+whether `ExactStateMemory.record_outcome()` runs at all) — but worth
+deduplicating (import from `zerx.transitions` instead of reimplementing)
+in a future small cleanup.
+
+**Not pushed to `origin/master` yet** — pending explicit human-owner
+confirmation, per this project's standing rule (every prior integration
+here followed the same gate). See "Exact next action" below.
+
+### `feat/baseline-120-followups` — build detail (merged above)
+
+Implemented via a 7-task plan
 (`docs/superpowers/plans/2026-08-06-baseline-120-followups.md`), each
 task individually code-reviewed.
 
@@ -778,11 +880,13 @@ Each finding was then checked against **every** branch in the repo
 (branch-wide resolution check, 2026-08-06). Only findings that **no
 branch solves** appear below.
 
-**Already solved — do NOT re-implement, these are merge candidates:**
+**Already solved, and now merged onto `master`** via the "Integration"
+section above (2026-08-06, local `master` only — not yet pushed, see
+"Exact next action") — do NOT re-implement:
 
 | Audit ID | Problem | Solved on |
 |---|---|---|
-| ARC-AUDIT-001 | Kaggle bundle unimportable (`ModuleNotFoundError: zerx.backends`) | `feat/policy-prompt-legal-budget` @ `c964ea0` (already merged into `integration/baseline-120-colab-ready`) |
+| ARC-AUDIT-001 | Kaggle bundle unimportable (`ModuleNotFoundError: zerx.backends`) | `feat/policy-prompt-legal-budget` @ `c964ea0`, now on `master` |
 | ARC-AUDIT-002 | Notebook writes `/tmp/zerx/*.py` without creating `/tmp/zerx` | same |
 | ARC-AUDIT-004 | `transitions._diff` IndexError / false "no change" on grid-shape change | same |
 | ARC-AUDIT-005 | `levels_completed` discarded (`score=0` hardcoded) | same — note `feat/baseline-120-followups` still has `score=0`; its `levels_completed` reference is trace metadata only, not this fix |
@@ -792,8 +896,10 @@ branch solves** appear below.
 `feat/baseline-120-followups` independently solved the **observability**
 half of ARC-AUDIT-003 (`Decision.model_error` / `raw_response` +
 per-step `logger.warning`, commits `35c0577` / `75eba2f`) and improved
-Cerebras HTTP error surfacing (`35a1f2d`). Do not re-implement those
-either.
+Cerebras HTTP error surfacing (`35a1f2d`) — also now on `master`. Do not
+re-implement those either. ARC-AUDIT-003's **other** half (no model
+actually attached to the Kaggle notebook) remains unresolved — see
+ARC-HANDOFF-001 below, still open.
 
 ---
 
@@ -1092,8 +1198,25 @@ experiment records become non-comparable — note it in the experiment log.
 
 ### [P0-integration] ARC-HANDOFF-004 — Merge hazard: two branches edit the same `decide()` block, one would revert the legal-actions fix
 
-**Status:** UNRESOLVED (integration-time hazard) ·
-**Source:** branch-wide resolution check · **Category:** Integration
+**Status:** **RESOLVED, 2026-08-06** (merge commit `f0c68f7`, part of the
+"Integration" section above) · **Source:** branch-wide resolution check ·
+**Category:** Integration
+
+**Resolution:** the union resolution below landed exactly as recommended
+— confirmed post-merge: `grep -n "model_error" zerx/policy.py` and
+`grep -n "legal_actions, budget" zerx/policy.py` (twice) both match on
+`master`. One deviation from this entry's own "Dependencies" note below:
+the actual integration plan
+(`docs/superpowers/plans/2026-08-06-baseline-120-followups-integration.md`)
+merged in a different order —
+`feat/baseline-120-followups` → `feat/policy-prompt-legal-budget` →
+`integration/baseline-120-colab-ready` — with its own documented
+rationale (`colab-ready` already contains most of
+`policy-prompt-legal-budget`'s content, so merging the latter first lets
+git apply only `colab-ready`'s unique diff). Worked cleanly: step 2 hit
+exactly the predicted conflict and resolved it via this entry's exact
+union; step 3 auto-merged with no conflicts at all. Final suite: 375
+passed, 0 failed — exceeds this entry's acceptance bar.
 
 #### Problem
 `feat/policy-prompt-legal-budget` and `feat/baseline-120-followups` both
@@ -1137,11 +1260,13 @@ and the same 5-argument `build_prompt(...)` inside the
 `candidate_count > 1` branch.
 
 #### Acceptance Criteria
-- [ ] Post-merge `zerx/policy.py` contains **both** `Legal actions this
-      turn` and `model_error`
-- [ ] `tests/test_policy_decide.py`'s legal-action tests pass
-- [ ] `feat/baseline-120-followups`' trace tests pass
-- [ ] Combined suite ≥ 332 + this branch's new tests, 0 failures
+- [x] Post-merge `zerx/policy.py` contains **both** `Legal actions this
+      turn` and `model_error` — confirmed by grep, 2026-08-06
+- [x] `tests/test_policy_decide.py`'s legal-action tests pass — 46/46
+      passed (`test_policy_decide.py` + `test_trace.py`), 2026-08-06
+- [x] `feat/baseline-120-followups`' trace tests pass — same run above
+- [x] Combined suite ≥ 332 + this branch's new tests, 0 failures — 375
+      passed, 0 failed, 2026-08-06
 
 #### Dependencies
 Also note `integration/baseline-120-colab-ready` has **already merged**
