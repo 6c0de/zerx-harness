@@ -257,10 +257,46 @@ detail.
 
 ## Kaggle state
 
-Not started. No `make submit`, no Kaggle CLI call, no notebook push.
-**Still open** from Day 1's exit condition — needs explicit owner approval
-before it happens, per `AGENTS.md`'s Kaggle gate. Not blocking the 4
-parallel tracks below (none of them touch Kaggle).
+Still no submission, no notebook push, no Kaggle CLI call — Day 1's exit
+condition remains open, and every push needs explicit owner approval per
+`AGENTS.md`'s Kaggle gate.
+
+**Updated 2026-08-06, branch `feat/kaggle-p0-model-attach` (Phase A of
+`docs/superpowers/specs/2026-08-06-kaggle-p0-model-attach-design.md`).**
+Four of the five blockers that stood between this repo and a scored
+submission are now closed on that branch; the fifth (actually serving a
+model) is deliberately deferred to Phase B, pending a measurement.
+
+Closed by Phase A:
+
+- `scripts/build_notebook.py`'s `ACCELERATOR` is `"rtx6000"`, not the
+  starter's default `"t4"` (2x16GB, too small for this model at any
+  precision we would run).
+- `notebooks/kernel-metadata.json` carries a real kernel id
+  (`enzeceb/arc-prize-2026-arc-agi-3-starter`) instead of the
+  `REPLACE_WITH_YOUR_USERNAME` placeholder that `make submit` refuses to
+  push, and a non-empty `model_sources`. `main()` now syncs both
+  `enable_gpu` and `model_sources` from constants, so the metadata file
+  cannot drift from what the run cell expects.
+- The run cell exports `ZERX_BACKEND=gemma_kaggle`, `ZERX_PLATFORM=kaggle`,
+  and `ZERX_GEMMA_BASE_URL` (command-line prefix, not the `.env` file —
+  `main.py` runs in a separate process and this does not depend on when
+  the framework calls `load_dotenv()`), and runs a **readiness gate**
+  before gameplay: it resolves `Config.from_env()` / `select_backend()`
+  in-process and raises `SystemExit` if the result is a
+  `FakeModelBackend` or if `KAGGLE_MODEL_DIR` is unset/missing. In-process
+  on purpose — IPython swallows a shell command's non-zero exit, so only a
+  real Python exception stops the notebook.
+- Local environment on the Windows owner's machine: `.venv` created,
+  `arc-agi`/`kaggle`/`pytest`/`numpy` installed, framework cloned and
+  slimmed. `make` is not installed there and the only interpreter is
+  Python 3.14, so the commands from `baseline-000.md`'s "Windows-native
+  environment deviations" were run directly; the `Makefile` is untouched.
+  Note `pygame` has no Python 3.14 wheel and fails to build from source on
+  that machine — it is not needed for the Kaggle path, but
+  `scripts/visualize_play.py` cannot run there.
+
+Not closed, by design — see "Why Phase B is deferred" below.
 
 ## Known failures or risks (carried over, still real)
 
@@ -950,8 +986,56 @@ ARC-HANDOFF-001 below, still open.
 
 ### [P0] ARC-HANDOFF-001 — The Kaggle submission notebook contains no model
 
-**Status:** UNRESOLVED · **Source:** ARC-AUDIT-003, ARC-AUDIT-015 ·
-**Category:** Kaggle / strategy
+**Status:** **PARTIALLY RESOLVED, 2026-08-06** on
+`feat/kaggle-p0-model-attach` (not on `master`) · **Source:**
+ARC-AUDIT-003, ARC-AUDIT-015 · **Category:** Kaggle / strategy
+
+#### Why Phase B is deferred (read before "fixing" this)
+
+This entry's own "Recommended Fix" below says to "add a cell that installs
+vLLM offline and launches the server". **That step rests on an assumption
+nobody has verified**, and acting on it directly would be building on a
+planned-but-unconfirmed path, which `AGENTS.md` explicitly forbids ("Do
+not assume that a design-document path or command exists merely because it
+was planned").
+
+Evidence found 2026-08-06 while scoping the fix: vLLM is not part of the
+Kaggle Python image; vLLM's own tracker carries an open installation issue
+titled "vLLM will NOT run in a Kaggle Notebook" for versions above 0.10;
+and the community workaround is a multi-gigabyte prebuilt-wheels dataset.
+Independently, the Colab bring-up of this same model already cost four
+separately-diagnosed install failures (see "Completed changes (Day 1 +
+Day 2)" items 1–4 above). The competition's own offline wheels directory
+ships `arc-agi`, not vLLM.
+
+So Phase A instead built `scripts/build_probe_notebook.py` →
+`notebooks/probe/probe.ipynb`: a non-submission kernel that runs in an
+environment configured identically to the real submission (same
+`rtx6000` accelerator, internet disabled, same competition and same Gemma
+model attached) and reports GPU/VRAM/compute-capability, `torch` and
+`transformers` versions, whether `vllm`/`bitsandbytes`/`accelerate` are
+importable, which quantization configs `transformers` exposes, the real
+`/kaggle/input` mount path for the weights, and the competition wheels
+listing — every section independently error-trapped so one failure does
+not cost the other answers, with results written to
+`/kaggle/working/probe.json`. It consumes no submission slot.
+
+Phase B (serve the model) is written from that result: vLLM server, an
+in-process `transformers` backend, or a prequantized checkpoint — chosen
+from measurements rather than from this entry's original guess.
+
+**Until Phase B lands, the built notebook deliberately refuses to run on
+Kaggle**: `KAGGLE_MODEL_DIR` is `None`, and the run cell raises
+`SystemExit` rather than playing heuristics-only and reporting it as a
+scored run.
+
+Two acceptance criteria below are now met on that branch
+(`model_sources` non-empty; server-unreachable/model-missing causes a
+loud, early failure rather than silent fallback), plus the existing tests
+still pass — full unfiltered suite **395 passed, 0 failed**, up from 378,
+with 17 new tests in `tests/test_build_probe_notebook.py` and
+`tests/test_kaggle_bundle_importable.py`. The remaining criteria need
+Phase B.
 
 #### Problem
 A submission built from any current branch runs the agent with **no

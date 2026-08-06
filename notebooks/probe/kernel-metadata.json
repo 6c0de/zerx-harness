@@ -1,7 +1,7 @@
 {
-  "id": "enzeceb/arc-prize-2026-arc-agi-3-starter",
-  "title": "ARC Prize 2026 — ARC-AGI-3 Starter",
-  "code_file": "submission.ipynb",
+  "id": "enzeceb/zerx-kaggle-env-probe",
+  "title": "zerx \u2014 Kaggle env probe",
+  "code_file": "probe.ipynb",
   "language": "python",
   "kernel_type": "notebook",
   "is_private": true,
