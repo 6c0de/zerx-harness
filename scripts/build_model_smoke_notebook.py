@@ -65,7 +65,9 @@ def build() -> dict:
         "os.makedirs('/tmp/zerx', exist_ok=True)"
     )
     zerx_cells = [
-        build_notebook.code_cell(f"%%writefile /tmp/zerx/{path.name}\n" + body)
+        build_notebook.code_cell(
+            f"%%writefile /tmp/zerx/{path.name}\n" + build_notebook.writefile_body(body)
+        )
         for path, body in zerx_bodies
     ]
     gate_cell = build_notebook.code_cell(

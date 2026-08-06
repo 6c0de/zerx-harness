@@ -145,6 +145,24 @@ def zerx_bundle_files() -> List[Path]:
     return sorted((ROOT / "zerx").glob("*.py"))
 
 
+def writefile_body(body: str) -> str:
+    """Never hand `%%writefile` an empty cell body.
+
+    IPython rejects it outright — "UsageError: %%writefile is a cell magic,
+    but the cell body is empty" — and on Kaggle papermill turns that into a
+    failed kernel. `zerx/__init__.py` is a legitimately empty file, so the
+    submission notebook died on its very first %%writefile cell, long before
+    reaching the agent.
+
+    Caught by notebooks/model-smoke (scripts/build_model_smoke_notebook.py) on
+    real Kaggle hardware, which is precisely the class of failure that kernel
+    exists to find without spending a submission.
+    """
+    if body.strip():
+        return body
+    return "# intentionally empty\n"
+
+
 def code_cell(source: str) -> dict:
     return {
         "cell_type": "code",
@@ -303,7 +321,7 @@ def build() -> dict:
     )
 
     zerx_write_cells = [
-        code_cell(f"%%writefile /tmp/zerx/{path.name}\n" + body)
+        code_cell(f"%%writefile /tmp/zerx/{path.name}\n" + writefile_body(body))
         for path, body in zerx_bodies
     ]
 

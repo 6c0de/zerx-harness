@@ -118,6 +118,26 @@ def test_notebook_creates_tmp_zerx_directory_before_writing_into_it():
     )
 
 
+def test_no_writefile_cell_has_an_empty_body():
+    """IPython rejects an empty `%%writefile` cell outright:
+
+        UsageError: %%writefile is a cell magic, but the cell body is empty
+
+    and on Kaggle papermill turns that into a failed kernel. `zerx/__init__.py`
+    is a legitimately empty file, so the submission notebook died on its very
+    first %%writefile cell, before reaching the agent at all — caught by the
+    model-smoke kernel on real Kaggle hardware, not by any local test.
+
+    Checks the whole bundle rather than `__init__.py` alone: any zerx module
+    that becomes empty later would fail the same way.
+    """
+    for source in _cell_sources(build_notebook.build()):
+        if not source.startswith("%%writefile"):
+            continue
+        first_line, _, body = source.partition("\n")
+        assert body.strip(), f"empty %%writefile body would abort the kernel: {first_line}"
+
+
 def test_writefile_into_a_missing_directory_really_does_fail():
     """Pin the assumption the fix rests on: IPython's writefile magic is a
     plain open(), so writing into a missing directory raises. If a future
