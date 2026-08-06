@@ -452,7 +452,60 @@ parallel tracks below (none of them touch Kaggle).
     silently capping at 81 instead of the requested 100 — confirmed by
     that same real run). `save_results_cell` now copies the trace
     directory to Drive and records `budget_soft_cap`/`trace_dir` in the
-    saved result JSON. Not yet re-run — see "Exact next action".
+    saved result JSON.
+
+    **Re-run, 2026-08-06 (commit `72d0426`), 8 games, real gemma-4-31b-it
+    on Colab A100-80GB, fp8, `MAX_ACTIONS=101` (off-by-one from the
+    is_done check, not the min-only bug — actually honored the requested
+    100 this time), `ZERX_BUDGET_SOFT_CAP=1000`.** Still `aggregate_score:
+    0.0`, 0 levels completed on all 8 games — but this time the trace made
+    the actual cause visible instead of leaving it a mystery. `ls20`'s
+    trace (101 steps): `source="model"` 25, `source="fallback_deterministic"`
+    76 (75%); only `ACTION1` (94x) and `RESET` (7x) were ever executed —
+    `ACTION2`/`ACTION3`/`ACTION4` never once, despite being legal.
+
+    **Real root cause (distinct from item 6, which is genuinely fixed):**
+    `build_prompt()` rendered its "Ranked click candidates" section
+    *unconditionally*, even on turns where `ACTION6` wasn't legal —
+    directly contradicting the "Legal actions this turn" line four lines
+    below it in the same prompt. The model's own raw output confirms this
+    caused real damage, not just risked it: `'call:{"action": "ACTION6",
+    "data": {"x": 36, "y": 45}}'` on `ls20` turns where `ACTION6` was
+    never legal (`ls20` never has it legal at all, per item 6's original
+    finding) — `parse_action()` correctly rejected it every time, falling
+    through to `_deterministic_fallback`'s fixed preference order, which
+    resolves to a static `ACTION1` for `ls20` specifically. One captured
+    reasoning even shows the model noticing the contradiction itself
+    mid-response: *"it appears there is a mismatch between the candidate
+    list and the legal action list."*
+
+    **Fixed, same commit round, TDD (`superpowers:test-driven-development`
+    — failing test written and confirmed RED before the code change, per
+    this project's standing practice):** `zerx/policy.py`'s `build_prompt()`
+    now gates the entire candidates section on `ActionName.ACTION6 in
+    legal_actions`, matching `decide()`'s own existing heuristic-path gate
+    (`if candidates and ActionName.ACTION6 in legal_actions`) instead of
+    contradicting it. New tests:
+    `test_build_prompt_omits_candidates_section_when_action6_not_legal`
+    (the bug fix) plus fixture updates to
+    `test_build_prompt_lists_ranked_click_candidates`/
+    `test_build_prompt_without_candidates_says_so_when_action6_legal` (both
+    now explicitly pass `ACTION6` as legal, since that's what they were
+    actually testing all along). Full fast suite after the fix: 312
+    passed (only the pre-existing `arcengine`-import environment gap
+    unrelated to this change, on modules requiring a real `.venv`).
+
+    **Not yet re-verified on a live Colab/Cerebras run** — this fix
+    addresses a real, evidenced mechanism (not a guess: confirmed by the
+    model's own raw output twice now, once via Cerebras in item 6's live
+    reproduction and once via this real Gemma-4-31B-it Colab trace), but
+    whether it moves `aggregate_score` off `0.0` is still an open,
+    falsifiable question, not a claimed result. The other real
+    contributor visible in the same trace — the model never once chose
+    `ACTION2`/`ACTION3`/`ACTION4` across 101 steps, model-sourced or not
+    — may be genuine capability/exploration limitation rather than a
+    prompt defect; not investigated further this round, and not assumed
+    to be fixed by this change.
 
 ## Parallel work split (Day 3, starting 2026-08-05)
 

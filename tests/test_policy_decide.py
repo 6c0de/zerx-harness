@@ -224,15 +224,41 @@ def test_build_prompt_lists_ranked_click_candidates():
         objects=(LabeledObject(label="obj0", color=5, cells=((1, 0),)),),
     )
     candidates = [ClickCandidate(x=1, y=0, object_label="obj0", score=0.5)]
-    prompt = build_prompt(perception, MemoryState(), candidates)
+    legal = frozenset({ActionName.ACTION6, ActionName.RESET})
+    prompt = build_prompt(perception, MemoryState(), candidates, legal_actions=legal)
     assert "obj0" in prompt
     assert "x=1, y=0" in prompt
 
 
-def test_build_prompt_without_candidates_says_so():
+def test_build_prompt_without_candidates_says_so_when_action6_legal():
     perception = PerceptionResult(ascii_grid="0", objects=())
-    prompt = build_prompt(perception, MemoryState())
+    legal = frozenset({ActionName.ACTION6, ActionName.RESET})
+    prompt = build_prompt(perception, MemoryState(), legal_actions=legal)
     assert "no click candidates" in prompt
+
+
+def test_build_prompt_omits_candidates_section_when_action6_not_legal():
+    """Root cause of a real 0.0 Colab run (docs/HANDOFF.md item 6's live
+    reproduction, and item 10's real gemma-4-31b-it trace): showing
+    'Ranked click candidates' unconditionally -- even on a turn where
+    ACTION6 isn't legal -- contradicts the 'Legal actions this turn' line
+    right below it. Confirmed via the model's own raw output: it
+    repeatedly proposed {"action": "ACTION6", ...} on ls20 turns where
+    ACTION6 was never legal, got correctly rejected by parse_action(), and
+    fell through to the fallback chain 76 of 101 steps. When ACTION6
+    isn't legal there is nothing to click toward, so the section (and its
+    "if you choose ACTION6" framing) must not appear at all.
+    """
+    perception = PerceptionResult(
+        ascii_grid="05",
+        objects=(LabeledObject(label="obj0", color=5, cells=((1, 0),)),),
+    )
+    candidates = [ClickCandidate(x=1, y=0, object_label="obj0", score=0.5)]
+    legal = frozenset({ActionName.ACTION1, ActionName.RESET})  # no ACTION6
+    prompt = build_prompt(perception, MemoryState(), candidates, legal_actions=legal)
+    assert "Ranked click candidates" not in prompt
+    assert "if you choose ACTION6" not in prompt
+    assert "click (x=" not in prompt  # the candidate-list line format itself
 
 
 def test_build_prompt_lists_legal_actions():

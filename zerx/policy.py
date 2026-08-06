@@ -169,13 +169,30 @@ def build_prompt(
             f"\n(+{omitted} more objects not listed; "
             f"showing the first {_MAX_PROMPT_OBJECTS} of {len(perception.objects)})"
         )
-    candidate_lines = (
-        "\n".join(
-            f"- {c.object_label}: click (x={c.x}, y={c.y}), score={c.score:.2f}"
-            for c in candidates[:5]
+    # Confirmed root cause of a real 0.0 Colab run (docs/HANDOFF.md item 6's
+    # live reproduction, and item 10's real gemma-4-31b-it trace): showing
+    # this section unconditionally -- even on a turn where ACTION6 isn't
+    # legal -- contradicts the "Legal actions this turn" line right below
+    # it. The model's own raw output confirmed this: it repeatedly proposed
+    # {"action": "ACTION6", ...} on turns where ACTION6 was never legal,
+    # got correctly rejected by parse_action(), and fell through to the
+    # fallback chain 76 of 101 steps in that trace. Gate the whole section
+    # on ACTION6 actually being legal this turn, same as decide()'s own
+    # heuristic path already does (`if candidates and ActionName.ACTION6 in
+    # legal_actions`) -- there is nothing to click toward otherwise.
+    candidates_section = ""
+    if ActionName.ACTION6 in legal_actions:
+        candidate_lines = (
+            "\n".join(
+                f"- {c.object_label}: click (x={c.x}, y={c.y}), score={c.score:.2f}"
+                for c in candidates[:5]
+            )
+            or "(no click candidates)"
         )
-        or "(no click candidates)"
-    )
+        candidates_section = (
+            "Ranked click candidates (if you choose ACTION6, prefer one of "
+            f"these exact coordinates over guessing):\n{candidate_lines}\n\n"
+        )
     legal_action_names = ", ".join(sorted(a.value for a in legal_actions)) or "(none)"
     budget_line = (
         f"Actions taken so far: {budget.actions_taken} (soft cap {budget.soft_cap}). "
@@ -187,8 +204,7 @@ def build_prompt(
         "You are playing a grid-based puzzle game.\n"
         f"Grid:\n{perception.ascii_grid}\n\n"
         f"Objects:\n{object_lines}\n\n"
-        "Ranked click candidates (if you choose ACTION6, prefer one of "
-        f"these exact coordinates over guessing):\n{candidate_lines}\n\n"
+        f"{candidates_section}"
         f"Legal actions this turn: {legal_action_names}\n\n"
         f"Action budget: {budget_line}\n\n"
         f"What you've learned so far: {memory.summary or '(nothing yet)'}\n\n"
