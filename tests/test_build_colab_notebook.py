@@ -89,6 +89,24 @@ def test_build_checks_out_exact_commit():
     assert "git clone" in combined
 
 
+def test_build_clones_and_slims_the_agents_framework():
+    """agent/my_agent.py does `from agents.agent import Agent` -- that
+    package is the arcprize/ARC-AGI-3-Agents framework (not a pip package)
+    and must actually be cloned into vendor/ARC-AGI-3-Agents before the
+    smoke-game cell imports MyAgent. Real Colab run confirmed the notebook
+    previously never cloned it at all, raising 'ModuleNotFoundError: No
+    module named agents'. Must also run scripts/slim_framework.py, matching
+    `make setup`'s local flow, so the upstream __init__.py's eager
+    langgraph/langsmith/smolagents imports (never installed here) don't
+    raise a second, different ImportError once the clone itself is fixed.
+    """
+    combined = _all_cell_sources(build_colab_notebook.build())
+    assert "git clone" in combined
+    assert "ARC-AGI-3-Agents.git" in combined
+    assert "vendor/ARC-AGI-3-Agents" in combined
+    assert "slim_framework.py" in combined
+
+
 def test_build_prints_environment_without_secrets():
     combined = _all_cell_sources(build_colab_notebook.build())
     assert "nvidia-smi" in combined or "torch.cuda" in combined

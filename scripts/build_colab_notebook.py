@@ -145,6 +145,24 @@ def build() -> dict:
         )
     )
 
+    # agent/my_agent.py does `from agents.agent import Agent` -- that `agents`
+    # package is the arcprize/ARC-AGI-3-Agents framework, not a pip package.
+    # Locally, `make setup` clones it to vendor/ARC-AGI-3-Agents and
+    # scripts/slim_framework.py rewrites its __init__.py to skip the
+    # upstream's eager langgraph/langsmith/smolagents imports (deps we never
+    # install). This notebook cloned OUR repo above but never cloned the
+    # framework itself -- real Colab run confirmed this raises
+    # "ModuleNotFoundError: No module named 'agents'" in the smoke-game cell
+    # below, since vendor/ARC-AGI-3-Agents simply doesn't exist yet.
+    framework_clone_cell = code_cell(
+        dedent(
+            """\
+            !git clone --depth 1 https://github.com/arcprize/ARC-AGI-3-Agents.git vendor/ARC-AGI-3-Agents
+            !python3.12 scripts/slim_framework.py
+            """
+        )
+    )
+
     env_print_cell = code_cell(
         dedent(
             """\
@@ -427,6 +445,7 @@ def build() -> dict:
             intro_cell,
             install_cell,
             checkout_cell,
+            framework_clone_cell,
             env_print_cell,
             start_vllm_cell,
             smoke_game_cell,
