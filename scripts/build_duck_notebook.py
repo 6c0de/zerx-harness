@@ -215,6 +215,61 @@ ADAPTIVE_BUDGET = dedent(
 )
 
 
+def patch_failure_boundary(source: str) -> str:
+    """Never let a late failure throw away the whole scored run.
+
+    Upstream shape:
+
+        try:
+            await bm.run(...)
+            ...
+        finally:
+            teardown
+
+    So anything `bm.run` raises propagates out of the cell. Kaggle marks the
+    notebook failed, and a failed notebook produces no `submission.parquet` —
+    which scores nothing at all, however many games had already been played and
+    recorded by the gateway before the failure. An eight-hour run can be lost to
+    a single unlucky exception in its last minute.
+
+    The fork catches it **only in a scored rerun**, prints the traceback, and
+    lets the notebook finish so the recorded games still count. In the unscored
+    verification pass the exception is re-raised, because there the whole point
+    is to see failures rather than survive them.
+
+    Strictly non-negative: if the run raises at the very start we finish with
+    nothing, which is exactly what failing would have given us. If it raises
+    part-way, we keep everything up to that point.
+    """
+    if "try:\n    await bm.run(" not in source or "\nfinally:\n" not in source:
+        raise SystemExit(
+            "[build_duck] the bm.run try/finally is not where this patch "
+            "expects it. Re-read the upstream run cell before rebuilding."
+        )
+    new_tail = dedent(
+        """\
+        except Exception as _run_error:
+            # FORK CHANGE: see scripts/build_duck_notebook.py
+            # (patch_failure_boundary) and docs/DUCK_FORK.md.
+            if not TRUE_SUBMISSION:
+                raise
+            import traceback
+
+            print(
+                "fork: benchmark raised after "
+                f"{time.time() - NOTEBOOK_START_EPOCH:.0f}s: "
+                f"{type(_run_error).__name__}: {_run_error}. Finishing the "
+                "notebook anyway so the games already recorded by the gateway "
+                "still score.",
+                flush=True,
+            )
+            traceback.print_exc()
+        finally:
+        """
+    )
+    return source.replace("finally:\n", new_tail, 1)
+
+
 def patch_run_cell(source: str) -> str:
     """Give the scored run a soft deadline. Upstream only gives one to the
     unscored pass, so a hidden game set larger or slower than the public one can
@@ -275,7 +330,8 @@ def build() -> dict:
 
     # 1. Soft deadline for the scored run.
     run_idx = find_cell(cells, "soft_end = None")
-    cells[run_idx]["source"] = patch_run_cell(cell_source(cells[run_idx]))
+    patched = patch_run_cell(cell_source(cells[run_idx]))
+    cells[run_idx]["source"] = patch_failure_boundary(patched)
 
     # 2. Replace upstream's empty customisation hook with ours. Using the hook
     #    upstream provides, rather than editing their logic, keeps our changes

@@ -136,7 +136,29 @@ if _per_game < bm.solver.max_runtime_s_per_game:
     bm.solver.max_runtime_s_per_game = _per_game
 ```
 
-### 5. Run manifest
+### 5. Failure boundary — a late exception must not throw away the whole run
+
+Upstream's run cell is `try: await bm.run(...) finally: teardown`. Anything
+`bm.run` raises therefore propagates out of the cell, Kaggle marks the notebook
+failed, and **a failed notebook produces no `submission.parquet`** — which
+scores nothing at all, no matter how many games the gateway had already
+recorded. An eight-hour run can be lost to one unlucky exception in its last
+minute.
+
+The fork catches it **only in a scored rerun**, prints the traceback, and lets
+the notebook finish so the recorded games still count. The unscored
+verification pass re-raises, because there the entire point is to surface
+failures rather than survive them.
+
+Strictly non-negative: raise at the start and we finish with nothing, which is
+exactly what failing would have given us; raise part-way and we keep everything
+up to that point.
+
+*Status: implemented in `scripts/build_duck_notebook.py`, not yet deployed —
+the account it would go to had a run queued and disturbing it was not worth the
+trade.*
+
+### 6. Run manifest
 
 Upstream prints its preamble but not the resolved shape of the run. The fork
 prints the game count, per-game budget, pass count, solver class and the
