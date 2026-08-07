@@ -28,6 +28,10 @@ traces/
 .vscode/
 notebooks/model-smoke/model-smoke.ipynb
 
+# Local CLI tool config / session data (machine-specific, not project asset)
+.codex/
+codex-chat-07/
+
 # Generated from Tufa Labs' published notebook by scripts/build_duck_notebook.py.
 # Not committed: it is a derivative of their content and the upstream GitHub
 # repository carries no licence. The patch script and docs/DUCK_FORK.md record
