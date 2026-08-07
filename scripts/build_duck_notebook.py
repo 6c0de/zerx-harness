@@ -173,6 +173,48 @@ CUSTOMISE = dedent(
 )
 
 
+ADAPTIVE_BUDGET = dedent(
+    '''
+        # FORK CHANGE: give every game a share of the time that actually exists.
+        #
+        # The score is the *mean* over games, so a game that never gets played
+        # scores 0 and drags the mean exactly as hard as one played badly. That
+        # makes an unplayed game the most expensive outcome available.
+        #
+        # Upstream sizes the per-game budget as a fixed constant, tuned on a
+        # 2xB200 host for 25 games. On Kaggle it is one RTX Pro 6000 and an
+        # unknown number of hidden games, and games run in waves of
+        # `solver.concurrency`. Measured here: ~180 generated tokens/second end
+        # to end, and roughly 59k tokens per game in Tufa Labs' own reference
+        # run — so 110 games need about 10 hours against a 9-hour limit. With a
+        # fixed per-game budget the early waves take everything and the last
+        # wave never starts.
+        #
+        # So derive the budget instead: split the time actually remaining
+        # across the waves actually needed. Never raise it above what upstream
+        # asked for — this only ever divides a budget that would not have fit.
+        import math as _math
+
+        _n_games = len(bm.games)
+        _conc = max(1, int(getattr(bm.solver, "concurrency", 1) or 1))
+        _waves = max(1, _math.ceil(_n_games / _conc))
+        _remaining = (soft_end - datetime.now()).total_seconds() if soft_end else None
+        if _remaining and _remaining > 0:
+            # 0.9 leaves room for the final wave to wind down and for the
+            # gateway to write its results; a budget that fits exactly does not.
+            _per_game = (_remaining / _waves) * 0.9
+            _current = getattr(bm.solver, "max_runtime_s_per_game", None)
+            if _current is None or _per_game < _current:
+                bm.solver.max_runtime_s_per_game = _per_game
+        print(
+            f"fork: {_n_games} games / concurrency {_conc} = {_waves} wave(s); "
+            f"{(_remaining or 0) / 3600:.1f}h left -> "
+            f"max_runtime_s_per_game = {getattr(bm.solver, 'max_runtime_s_per_game', None)}"
+        )
+    '''
+)
+
+
 def patch_run_cell(source: str) -> str:
     """Give the scored run a soft deadline. Upstream only gives one to the
     unscored pass, so a hidden game set larger or slower than the public one can
@@ -217,7 +259,7 @@ def patch_run_cell(source: str) -> str:
             )
         print(f"taaf.kaggle: soft_end = {{soft_end}}")
         """
-    )
+    ) + ADAPTIVE_BUDGET
     return source.replace(old, new)
 
 

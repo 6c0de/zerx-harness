@@ -102,12 +102,70 @@ the attribute upstream already derives its soft end from. The verification pass
 finishes in about half an hour; the scored rerun takes the other branch and is
 unaffected.
 
-### 4. Run manifest
+### 4. Adaptive per-game time budget — derived from a measurement, not a guess
+
+The score is the **mean over games**, so a game that never gets played scores 0
+and drags the mean exactly as hard as one played badly. That makes an unplayed
+game the most expensive outcome available, and upstream's fixed per-game budget
+is what produces them.
+
+Measured in this fork's own verification run on Kaggle hardware:
+
+```
+Model loading took 33.66 GiB memory and 160.8 seconds
+Available KV cache memory: 43.62 GiB -> GPU KV cache size: 177,968 tokens
+generated tokens/sec: 179.75 (job wallclock)
+manifest: max_runtime_s_per_game=7920.0, concurrency=28
+```
+
+Tufa Labs' reference run used ~59k tokens per game. At the ~180 tokens/second
+this hardware sustains end to end, 110 hidden games need about **10 hours**
+against Kaggle's **9-hour** limit — and games run in waves of
+`solver.concurrency`, so a fixed budget lets the early waves take everything
+and leaves the last wave unplayed.
+
+The fork therefore derives the budget: split the time that actually remains
+across the waves actually needed, and **never raise it above what upstream
+asked for**. If the run would have fitted anyway, nothing changes; the change
+only ever divides a budget that would not have fitted.
+
+```python
+_waves = ceil(len(bm.games) / bm.solver.concurrency)
+_per_game = ((soft_end - now).total_seconds() / _waves) * 0.9
+if _per_game < bm.solver.max_runtime_s_per_game:
+    bm.solver.max_runtime_s_per_game = _per_game
+```
+
+### 5. Run manifest
 
 Upstream prints its preamble but not the resolved shape of the run. The fork
 prints the game count, per-game budget, pass count, solver class and the
 submission flags. Without it, a low score and "played four games, then got
 killed" look identical in the logs.
+
+## A change that looked obvious and was measured to be worthless
+
+Worth recording, because it is the method working as intended.
+
+The bundle's setup command launches the server with `VLLM_MAX_MODEL_LEN =
+65536` while the agent's own `ANALYZER_CONTEXT_WINDOW` is `32768` — twice the
+context the agent ever uses. vLLM's own startup line looks like a smoking gun:
+
+```
+Maximum concurrency for 65,536 tokens per request: 10.12x
+```
+
+Halving `max_model_len` would double that figure, so it reads as free
+concurrency. It is not. The same run's engine logs show peak KV cache usage of
+**76% across 25 concurrent requests**, which puts the *actual* average context
+at roughly 5,400 tokens — nowhere near 32k, let alone 65k. The KV pool is
+allocated as a whole and is not the binding constraint, so lowering
+`max_model_len` would change nothing.
+
+Not shipped. The remaining serving question — what concurrency this specific
+card actually prefers, given generation throughput fell from 454 to 160
+tokens/second as the cache filled — is empirical, and answering it needs a
+measurement run per setting rather than an argument.
 
 ## What this fork deliberately does not do
 
